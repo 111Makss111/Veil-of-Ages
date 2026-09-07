@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: veil-of-ages-api
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build --workspace @veil-of-ages/api
+    startCommand: npm run start --workspace @veil-of-ages/api
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 24.13.0
+      - key: DATABASE_URL
+        sync: false
+      - key: WEB_ORIGIN
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_BOT_USERNAME
+        sync: false
+      - key: TELEGRAM_WEBHOOK_SECRET
+        generateValue: true
+      - key: LINK_TTL_MINUTES
+        value: 10
