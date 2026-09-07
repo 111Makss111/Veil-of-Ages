@@ -7,7 +7,9 @@ export const pool = config.DATABASE_URL
   ? new Pool({
       connectionString: config.DATABASE_URL,
       ssl: config.NODE_ENV === "production" ? { rejectUnauthorized: false } : undefined,
-      max: 5
+      max: 5,
+      connectionTimeoutMillis: 6000,
+      query_timeout: 6000
     })
   : null;
 

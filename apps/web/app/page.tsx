@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Services from './services';
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 
@@ -53,13 +54,9 @@ export default function Home() {
       <section className="hero">
         <span className="eyebrow">VEIL OF AGES</span>
         <h1>Центр інтеграцій</h1>
-        <p className="lead">Основа проєкту готова з’єднати Vercel, Render, Neon і Telegram в одну систему.</p>
+        <p className="lead">Стан підключень і сервісів вашого проєкту.</p>
 
-        <div className="grid" aria-label="Сервіси проєкту">
-          <Service name="Vercel" detail="Вебінтерфейс" />
-          <Service name="Render" detail="API та webhook" />
-          <Service name="Neon" detail="PostgreSQL" />
-        </div>
+        <Services />
 
         <div className="telegram-card">
           <div>
@@ -93,17 +90,5 @@ export default function Home() {
         )}
       </section>
     </main>
-  );
-}
-
-function Service({ name, detail }: { name: string; detail: string }) {
-  return (
-    <article className="service">
-      <span className="dot" />
-      <div>
-        <strong>{name}</strong>
-        <small>{detail}</small>
-      </div>
-    </article>
   );
 }

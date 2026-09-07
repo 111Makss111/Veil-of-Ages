@@ -3,6 +3,7 @@ import cors from "@fastify/cors";
 import { z } from "zod";
 import { config } from "./config.js";
 import { migrate, pool } from "./db.js";
+import { serviceStatus } from './status.js';
 import {
   createTelegramLink,
   getTelegramLinkStatus,
@@ -13,6 +14,11 @@ import {
 } from "./telegram.js";
 
 const app = Fastify({ logger: true });
+
+app.get('/api/status', async (_request, reply) => {
+  reply.header('Cache-Control', 'no-store');
+  return { services: await serviceStatus() };
+});
 
 await app.register(cors, {
   origin: config.WEB_ORIGIN,
