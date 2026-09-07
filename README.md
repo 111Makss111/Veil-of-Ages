@@ -47,9 +47,12 @@ Render читає `render.yaml`. Після створення Web Service до�
 
 У Vercel оберіть:
 
-- Root Directory: `apps/web`;
+- Root Directory: залиште порожнім (корінь репозиторію);
 - Framework Preset: `Next.js`;
-- Output Directory: override вимкнений (поле порожнє).
+- Build Command і Output Directory: задаються кореневим `vercel.json` — збирається лише вебсайт, результат `apps/web/.next`.
+
+Якщо проєкт уже використовує Root Directory `apps/web`, там також є окремий `vercel.json` з результатом `.next`.
+Після змін пуште новий commit: Redeploy старого commit не включає нові файли конфігурації.
 
 Потім додайте змінну:
 
