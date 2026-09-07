@@ -45,7 +45,13 @@ Render читає `render.yaml`. Після створення Web Service до�
 
 ## Змінні для Vercel
 
-У Vercel оберіть Root Directory `apps/web` і додайте:
+У Vercel оберіть:
+
+- Root Directory: `apps/web`;
+- Framework Preset: `Next.js`;
+- Output Directory: override вимкнений (поле порожнє).
+
+Потім додайте змінну:
 
 - `NEXT_PUBLIC_API_URL=https://<RENDER_HOST>`
 
