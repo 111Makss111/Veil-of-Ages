@@ -29,11 +29,9 @@ export default function Services() {
   }, []);
   useEffect(() => {
     void refresh();
-    const timer = setInterval(() => { if (!document.hidden) void refresh(); }, 60000);
-    return () => clearInterval(timer);
   }, [refresh]);
   return <>
-    <div className="status-toolbar"><p>Автоперевірка щохвилини. Статус бота окремий від прив’язки вашого Telegram.</p><button disabled={busy} onClick={() => void refresh()}>{busy ? 'Перевіряю…' : 'Оновити статуси'}</button></div>
+    <div className="status-toolbar"><p>Перевірка при відкритті сторінки або кнопкою.</p><button disabled={busy} onClick={() => void refresh()}>{busy ? 'Перевіряю…' : 'Оновити статуси'}</button></div>
     <div className="grid" aria-label="Сервіси проєкту" aria-live="polite">
       {Object.entries(names).map(([id, name]) => {
         const result = results.find(item => item.id === id);
