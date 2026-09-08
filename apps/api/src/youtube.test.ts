@@ -32,7 +32,7 @@ test('unconfigured OAuth routes fail closed and disable caching', async () => {
       const response = await app.inject({ url });
       assert.equal(response.statusCode, 503);
       assert.equal(response.headers['cache-control'], 'no-store');
-      assert.equal(response.headers['referrer-policy'], 'no-referrer');
+      assert.equal(response.headers['referrer-policy'], url === '/auth/youtube' ? 'same-origin' : 'no-referrer');
       assert.ok(!response.body.includes('private'));
     }
   } finally { await app.close(); }

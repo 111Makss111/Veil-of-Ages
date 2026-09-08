@@ -42,8 +42,12 @@ test('OAuth rejects unauthorized starts, binds browser, consumes state once and 
   const app = Fastify();
   await app.register(youtubeRoutes);
   try {
+    const form = await app.inject({ url: '/auth/youtube' });
+    assert.equal(form.statusCode, 200);
+    assert.equal(form.headers['referrer-policy'], 'same-origin');
     const post = (secret: string, origin = 'https://api.example.test') => app.inject({ method: 'POST', url: '/auth/youtube/start', headers: { origin, 'content-type': 'application/x-www-form-urlencoded' }, payload: new URLSearchParams({ secret }).toString() });
     assert.equal((await post('wrong')).statusCode, 401);
+    assert.equal((await post(process.env.YOUTUBE_SETUP_SECRET!, 'null')).statusCode, 403);
     assert.equal((await post(process.env.YOUTUBE_SETUP_SECRET!, 'https://evil.test')).statusCode, 403);
     const start = await post(process.env.YOUTUBE_SETUP_SECRET!);
     assert.equal(start.statusCode, 303);

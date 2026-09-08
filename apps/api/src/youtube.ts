@@ -68,6 +68,9 @@ export async function youtubeRoutes(app: FastifyInstance) {
   });
 
   app.get('/auth/youtube', { logLevel: 'silent' }, async (_request, reply) => {
+    // no-referrer makes browsers send Origin: null on native form POSTs.
+    // Only the setup form needs same-origin; the OAuth callback stays no-referrer.
+    reply.header('Referrer-Policy', 'same-origin');
     if (!ready()) return reply.code(503).type('text/html').send(page('<p>Потрібні DATABASE_URL, YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET та YOUTUBE_SETUP_SECRET (мінімум 32 символи).</p>'));
     return reply.type('text/html').send(page('<p>Підключіть Google-акаунт, який керує потрібним каналом. Відео зараз не завантажується.</p><form method="post" action="/auth/youtube/start"><label>Секрет налаштування з Render <input name="secret" type="password" required autocomplete="off"></label><button type="submit">Підключити YouTube через Google</button></form>'));
   });
