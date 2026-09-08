@@ -1,5 +1,6 @@
 import { pool } from './db.js';
 import { config } from './config.js';
+import { getYoutubeRefreshToken, googleToken } from './youtube.js';
 
 type Check = { id: string; state: 'connected' | 'error' | 'not_configured'; detail: string; checkedAt: string };
 const cache = new Map<string, { until: number; promise: Promise<Check> }>();
@@ -18,6 +19,21 @@ async function json(url: string, init?: RequestInit) {
   const response = await fetch(url, { ...init, redirect: 'error', signal: AbortSignal.timeout(6000) });
   if (!response.ok) throw new Error('Probe failed');
   return response.json();
+}
+async function youtubeStatus(): Promise<Check> {
+  const empty: Check = { id: 'youtube', state: 'not_configured', detail: 'Потрібно надати доступ через Google', checkedAt: new Date().toISOString() };
+  if (!process.env.YOUTUBE_CLIENT_ID || !process.env.YOUTUBE_CLIENT_SECRET) return empty;
+  try {
+    const refresh = await getYoutubeRefreshToken();
+    if (!refresh) return empty;
+    return check('youtube', true, async () => {
+      const token = await googleToken({ client_id: process.env.YOUTUBE_CLIENT_ID!, client_secret: process.env.YOUTUBE_CLIENT_SECRET!, refresh_token: refresh, grant_type: 'refresh_token' });
+      if (token.scope && !token.scope.split(' ').includes('https://www.googleapis.com/auth/youtube.upload')) throw new Error('Missing upload scope');
+      return 'Доступ Google активний; завантаження ролика ще потрібно перевірити';
+    }, 300000);
+  } catch {
+    return { ...empty, state: 'error', detail: 'Не вдалося прочитати доступ YouTube; перевірте базу та секрет налаштування' };
+  }
 }
 export async function serviceStatus() {
   const env = process.env;
@@ -47,12 +63,6 @@ export async function serviceStatus() {
       if (data.service !== 'docker' || data.ok !== true) throw new Error('Invalid health response');
       return 'Стан Docker підтверджено агентом перевірки';
     }),
-    check('youtube', !!(env.YOUTUBE_CLIENT_ID && env.YOUTUBE_CLIENT_SECRET && env.YOUTUBE_REFRESH_TOKEN), async () => {
-      const token = await json('https://oauth2.googleapis.com/token', { method: 'POST', body: new URLSearchParams({ client_id: env.YOUTUBE_CLIENT_ID!, client_secret: env.YOUTUBE_CLIENT_SECRET!, refresh_token: env.YOUTUBE_REFRESH_TOKEN!, grant_type: 'refresh_token' }) });
-      if (!token.access_token) throw new Error('No token');
-      const data = await json('https://www.googleapis.com/youtube/v3/channels?part=id&mine=true', { headers: { Authorization: `Bearer ${token.access_token}` } });
-      if (!data.items?.length) throw new Error('No channel');
-      return 'Доступ до вашого каналу підтверджено';
-    }, 300000)
+    youtubeStatus()
   ]);
 }

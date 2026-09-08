@@ -4,6 +4,7 @@ import { z } from "zod";
 import { config } from "./config.js";
 import { migrate, pool } from "./db.js";
 import { serviceStatus } from './status.js';
+import { youtubeRoutes } from './youtube.js';
 import {
   createTelegramLink,
   getTelegramLinkStatus,
@@ -13,7 +14,9 @@ import {
   type TelegramUpdate
 } from "./telegram.js";
 
-const app = Fastify({ logger: true });
+// OAuth authorization codes must never appear in request logs.
+const app = Fastify({ logger: { serializers: { req: (req) => ({ method: req.method, url: req.url?.split('?')[0], hostname: req.hostname }) } } });
+await app.register(youtubeRoutes);
 
 app.get('/api/status', async (_request, reply) => {
   reply.header('Cache-Control', 'no-store');

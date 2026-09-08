@@ -73,7 +73,7 @@ Telegram перевіряється окремо. Vercel означає зава
 | n8n | `N8N_URL`, `N8N_API_KEY` | Авторизоване читання `/api/v1/workflows?limit=1` |
 | cron-job.org | `CRON_JOB_API_KEY` | Доступ до списку завдань, не їх виконання. Результат кешується 30 хвилин через квоту API |
 | Docker | `DOCKER_HEALTH_URL`, `DOCKER_HEALTH_TOKEN` | Захищений агент має реально перевірити Docker і повернути JSON `{"service":"docker","ok":true}`. Агент ще не розгорнуто; Docker socket/керуючий API не відкривати в інтернет |
-| YouTube | `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET`, `YOUTUBE_REFRESH_TOKEN` | Оновлення OAuth-токена й читання власного каналу. Майстер OAuth ще не додано |
+| YouTube | `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET`, `YOUTUBE_SETUP_SECRET` | Оновлення збереженого OAuth-токена. Не є підтвердженням успішного завантаження відео |
 
 Без значень ці сервіси показують «Не налаштовано». Звичайні перевірки кешуються
 30 секунд, YouTube — 5 хвилин; час на картці показує момент фактичної перевірки.
@@ -83,3 +83,22 @@ API повертає лише статуси, без ключів, адрес п
 npm run check
 npm run build
 ```
+
+## Підключення YouTube (власник проєкту)
+
+1. Google OAuth client: Web application, scope `https://www.googleapis.com/auth/youtube.upload`.
+2. Redirect URI: `https://<RENDER_HOST>/auth/youtube/callback` (без завершального слеша).
+3. У Render додайте `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET` та випадковий
+   `YOUTUBE_SETUP_SECRET` (32+ символи; можна Generate у Render). Збережіть цей
+   секрет у менеджері паролів. Не додавайте його до Vercel або Git.
+4. Після розгортання нового коду відкрийте `https://<RENDER_HOST>/auth/youtube`.
+   Введіть секрет налаштування, оберіть свій Google-акаунт і надайте дозвіл.
+5. Refresh token зберігається в Neon, зашифрований AES-256-GCM. Вручну копіювати
+   його не потрібно. Зміна setup secret робить старий токен нечитабельним;
+   після зміни потрібно підключитися заново. Старий `YOUTUBE_REFRESH_TOKEN`
+   підтримується як fallback, якщо запису в базі немає.
+
+Сесія одноразова, діє 10 хвилин, прив'язана до браузера, використовує state та PKCE.
+Коди авторизації не журналюються. У Testing Google може обмежувати строк дії
+доступу; якщо він відкликаний або минув, повторіть підключення.
+Зараз реалізовано лише отримання доступу: завантажувач відео ще не додано.

@@ -17,6 +17,17 @@ export async function migrate(): Promise<void> {
   if (!pool) return;
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS youtube_oauth_states (
+      state_hash TEXT PRIMARY KEY,
+      browser_hash TEXT NOT NULL,
+      verifier_encrypted TEXT NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS youtube_connection (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      refresh_token_encrypted TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
     CREATE TABLE IF NOT EXISTS telegram_links (
       id UUID PRIMARY KEY,
       token_hash TEXT NOT NULL UNIQUE,
