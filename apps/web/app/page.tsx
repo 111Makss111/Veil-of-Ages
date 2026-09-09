@@ -10,7 +10,10 @@ export default function Home() {
         <p className="lead">Стан підключень і сервісів вашого проєкту.</p>
         <Services />
         {apiUrl && (
-          <p><a href={`${apiUrl}/youtube/upload`}>Завантажити тестове відео на YouTube (приватно)</a></p>
+          <div>
+            <p><a href={`${apiUrl}/media`}>Створити відео з картинки та музики</a></p>
+            <p><a href={`${apiUrl}/youtube/upload`}>Завантажити готове відео на YouTube (приватно)</a></p>
+          </div>
         )}
       </section>
     </main>

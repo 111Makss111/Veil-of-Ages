@@ -6,6 +6,7 @@ import { migrate, pool } from "./db.js";
 import { serviceStatus } from './status.js';
 import { youtubeRoutes } from './youtube.js';
 import { youtubeUploadRoutes } from './youtube-upload.js';
+import { mediaRoutes } from './media.js';
 import {
   createTelegramLink,
   getTelegramLinkStatus,
@@ -19,6 +20,7 @@ import {
 const app = Fastify({ logger: { serializers: { req: (req) => ({ method: req.method, url: req.url?.split('?')[0], hostname: req.hostname }) } } });
 await app.register(youtubeRoutes);
 await app.register(youtubeUploadRoutes);
+await app.register(mediaRoutes);
 
 app.get('/api/status', async (_request, reply) => {
   reply.header('Cache-Control', 'no-store');
