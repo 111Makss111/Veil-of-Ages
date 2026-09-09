@@ -1,3 +1,6 @@
+import StudioMotion from './studio-motion';
+import './green-studio.css';
+
 export default function Home() {
   const api = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, '');
   return <>
@@ -8,8 +11,9 @@ export default function Home() {
       <article className="world-card"><div className="art art-visual" aria-hidden="true"><i/><i/><i/></div><div className="world-text"><span>02 / VISION</span><h3>Побачити музику</h3><p>Світло, форма та рух. Візуальні історії, що продовжують настрій за межами звуку.</p></div></article>
       <article className="world-card"><div className="art art-space" aria-hidden="true"><i/></div><div className="world-text"><span>03 / ATMOSPHERE</span><h3>Залишитися в моменті</h3><p>Простір для зосередження, уяви та власних історій. Кожен знаходить у ньому щось своє.</p></div></article>
     </div></section>
+    <StudioMotion />
     <section className="approach section" id="approach"><p className="eyebrow">02 / THE WAY WE CREATE</p><div><h2>Спочатку — настрій.<br />Потім — <em>усе інше.</em></h2><p>Ми починаємо з відчуття. Шукаємо його звучання, підбираємо візуальну мову й поєднуємо деталі в цілісну історію. Без зайвого шуму. З увагою до того, що залишається після останньої ноти.</p><div className="process"><span>Відчути</span><b>→</b><span>Створити</span><b>→</b><span>Поділитися</span></div></div></section>
-    <section className="listen section" id="listen"><p className="eyebrow">03 / STAY IN THE FREQUENCY</p><h2>Знайдемося<br /><em>на одній хвилі.</em></h2><p>Слухайте Veil of Ages та стежте за новими музичними історіями на YouTube.</p><a className="primary-link" href="https://www.youtube.com/@VeilofAges-e" target="_blank" rel="noopener noreferrer">Veil of Ages на YouTube <span>↗</span></a></section></main>
+    <section className="listen section" id="listen"><div className="channel-art" aria-hidden="true"><div className="channel-ring"/><span>V / A</span><small>SOUND HAS A WORLD.</small></div><div className="channel-copy"><p className="eyebrow">03 / YOUTUBE — @VEILOFAGES-E</p><h2>Знайдемося<br /><em>на одній хвилі.</em></h2><p>Наш канал — продовження світу Veil of Ages. Музика та візуальні історії в одному місці: відкривай відео, слухай у своєму темпі та зберігай те, що відгукується.</p><div className="channel-tags"><span>Музика</span><span>Візуальні історії</span><span>Атмосфера</span></div><a className="primary-link" href="https://www.youtube.com/@VeilofAges-e" target="_blank" rel="noopener noreferrer">Відкрити канал на YouTube <span>↗</span></a><p className="channel-note">Підпишись на каналі, щоб повертатися до нових історій.</p></div></section></main>
     <footer className="site-footer"><a className="wordmark" href="#">V / A <span>VEIL OF AGES</span></a><span>МУЗИКА. ОБРАЗИ. ВІДЧУТТЯ.</span><small>© {new Date().getFullYear()} Veil of Ages</small></footer>
   </>;
 }
