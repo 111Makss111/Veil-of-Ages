@@ -17,6 +17,12 @@ export async function migrate(): Promise<void> {
   if (!pool) return;
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS youtube_uploads (
+      file_hash TEXT PRIMARY KEY,
+      state TEXT NOT NULL CHECK (state IN ('uploading', 'complete', 'uncertain')),
+      video_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
     CREATE TABLE IF NOT EXISTS youtube_oauth_states (
       state_hash TEXT PRIMARY KEY,
       browser_hash TEXT NOT NULL,
