@@ -8,6 +8,7 @@ import { youtubeRoutes } from './youtube.js';
 import { youtubeUploadRoutes } from './youtube-upload.js';
 import { mediaRoutes } from './media.js';
 import { installOwnerAuth } from './owner-auth.js';
+import { songsRoutes } from './songs.js';
 import {
   createTelegramLink,
   getTelegramLinkStatus,
@@ -23,6 +24,7 @@ await installOwnerAuth(app);
 await app.register(youtubeRoutes);
 await app.register(youtubeUploadRoutes);
 await app.register(mediaRoutes);
+await app.register(songsRoutes);
 
 app.get('/api/status', async (_request, reply) => {
   reply.header('Cache-Control', 'no-store');

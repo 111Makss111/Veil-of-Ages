@@ -67,6 +67,9 @@ export async function migrate(): Promise<void> {
     CREATE INDEX IF NOT EXISTS telegram_links_expires_at_idx
       ON telegram_links (expires_at);
   `);
+  const { songsMigration, seedSongs } = await import('./songs-store.js');
+  await pool.query(songsMigration);
+  await seedSongs(pool);
 }
 
 export function requirePool(): pg.Pool {
