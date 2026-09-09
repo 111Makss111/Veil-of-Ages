@@ -40,7 +40,7 @@ export async function mediaRoutes(app: FastifyInstance) {
       .header('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; media-src blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
     if (!request.url.startsWith('/media/jobs')) return;
     const secret = request.headers['x-setup-secret'];
-    if (typeof secret !== 'string' || !setupSecretMatches(secret, process.env.YOUTUBE_SETUP_SECRET ?? '')) return reply.code(401).send({ error: 'Введіть правильний YOUTUBE_SETUP_SECRET з Render.' });
+    if (!request.ownerSession?.verified && (typeof secret !== 'string' || !setupSecretMatches(secret, process.env.YOUTUBE_SETUP_SECRET ?? ''))) return reply.code(401).send({ error: 'Потрібно увійти у кабінет.' });
     if (request.method === 'POST' && request.headers.origin !== origin) return reply.code(403).send({ error: 'Відкрийте форму на Render заново.' });
   });
   app.get('/media', async (_req, reply) => reply.type('text/html').send(mediaHtml));

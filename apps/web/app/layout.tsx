@@ -3,7 +3,7 @@ import "./styles.css";
 
 export const metadata: Metadata = {
   title: "Veil of Ages",
-  description: "Панель інтеграцій Veil of Ages"
+  description: "Veil of Ages — незалежна музична та візуальна студія. Музика, образи та атмосферні історії."
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

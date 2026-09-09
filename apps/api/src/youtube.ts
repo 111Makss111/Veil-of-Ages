@@ -79,7 +79,7 @@ export async function youtubeRoutes(app: FastifyInstance) {
     if (!ready()) return reply.code(503).send({ error: 'YouTube setup is not configured' });
     if (request.headers.origin !== origin) return reply.code(403).send({ error: 'Invalid origin' });
     const body = z.object({ secret: z.string().max(1024) }).safeParse(request.body);
-    if (!body.success || !setupSecretMatches(body.data.secret, secret)) return reply.code(401).send({ error: 'Invalid setup secret' });
+    if (!request.ownerSession?.verified && (!body.success || !setupSecretMatches(body.data.secret, secret))) return reply.code(401).send({ error: 'Invalid setup secret' });
     try {
       const state = random(), browser = random(), verifier = random();
       const db = requirePool();

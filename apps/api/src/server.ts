@@ -7,6 +7,7 @@ import { serviceStatus } from './status.js';
 import { youtubeRoutes } from './youtube.js';
 import { youtubeUploadRoutes } from './youtube-upload.js';
 import { mediaRoutes } from './media.js';
+import { installOwnerAuth } from './owner-auth.js';
 import {
   createTelegramLink,
   getTelegramLinkStatus,
@@ -18,6 +19,7 @@ import {
 
 // OAuth authorization codes must never appear in request logs.
 const app = Fastify({ logger: { serializers: { req: (req) => ({ method: req.method, url: req.url?.split('?')[0], hostname: req.hostname }) } } });
+await installOwnerAuth(app);
 await app.register(youtubeRoutes);
 await app.register(youtubeUploadRoutes);
 await app.register(mediaRoutes);

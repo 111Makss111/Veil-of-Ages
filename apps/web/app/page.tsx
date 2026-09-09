@@ -1,21 +1,15 @@
-import Services from './services';
-
 export default function Home() {
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, '');
-  return (
-    <main>
-      <section className="hero">
-        <span className="eyebrow">VEIL OF AGES</span>
-        <h1>Центр інтеграцій</h1>
-        <p className="lead">Стан підключень і сервісів вашого проєкту.</p>
-        <Services />
-        {apiUrl && (
-          <div>
-            <p><a href={`${apiUrl}/media`}>Створити відео з картинки та музики</a></p>
-            <p><a href={`${apiUrl}/youtube/upload`}>Завантажити готове відео на YouTube (приватно)</a></p>
-          </div>
-        )}
-      </section>
-    </main>
-  );
+  const api = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, '');
+  return <>
+    <nav className="site-nav" aria-label="Головна навігація"><a className="wordmark" href="#">V / A <span>VEIL OF AGES</span></a><div className="nav-links"><a href="#universe">Наш світ</a><a href="#approach">Підхід</a><a href="#listen">Слухати</a></div>{api && <a className="login-link" href={`${api}/account/login`}>Studio access ↗</a>}</nav>
+    <main><section className="studio-hero"><div className="hero-copy"><p className="eyebrow">INDEPENDENT MUSIC & VISUAL STUDIO</p><h1>Між звуком<br />і <em>відчуттям.</em></h1><p className="intro">Музика, що створює простір.<br />Образи, у яких хочеться залишитися.</p><a className="primary-link" href="#universe">Відкрити світ студії <span>↗</span></a><div className="hero-caption">● VEIL OF AGES — SOUND IN MOTION</div></div><div className="sound-sculpture" aria-hidden="true"><div className="orbit" /><div className="orbit orbit-two" /><div className="vinyl"><div className="vinyl-core">V / A</div></div><div className="sculpture-label">A SPACE TO FEEL.<br />A SOUND TO REMEMBER.</div></div><div className="hero-bottom"><span>МУЗИКА / ВІЗУАЛЬНІ ІСТОРІЇ / АТМОСФЕРА</span><a href="#universe">SCROLL TO EXPLORE ↓</a></div></section>
+    <section className="section" id="universe"><div className="section-heading"><p className="eyebrow">01 / OUR UNIVERSE</p><h2>Звучання має<br /><em>власний світ.</em></h2><p>Veil of Ages — незалежний творчий простір на перетині музики та візуального мистецтва. Тут ідеї набувають ритму, кольору й характеру.</p></div><div className="world-grid">
+      <article className="world-card"><div className="art art-sound" aria-hidden="true">{Array.from({length:19},(_,i)=><i key={i}/>)}</div><div className="world-text"><span>01 / SOUND</span><h3>Відчути більше</h3><p>Атмосферні композиції, текстури та мелодії. Звучання, яке не поспішає розповісти все одразу.</p></div></article>
+      <article className="world-card"><div className="art art-visual" aria-hidden="true"><i/><i/><i/></div><div className="world-text"><span>02 / VISION</span><h3>Побачити музику</h3><p>Світло, форма та рух. Візуальні історії, що продовжують настрій за межами звуку.</p></div></article>
+      <article className="world-card"><div className="art art-space" aria-hidden="true"><i/></div><div className="world-text"><span>03 / ATMOSPHERE</span><h3>Залишитися в моменті</h3><p>Простір для зосередження, уяви та власних історій. Кожен знаходить у ньому щось своє.</p></div></article>
+    </div></section>
+    <section className="approach section" id="approach"><p className="eyebrow">02 / THE WAY WE CREATE</p><div><h2>Спочатку — настрій.<br />Потім — <em>усе інше.</em></h2><p>Ми починаємо з відчуття. Шукаємо його звучання, підбираємо візуальну мову й поєднуємо деталі в цілісну історію. Без зайвого шуму. З увагою до того, що залишається після останньої ноти.</p><div className="process"><span>Відчути</span><b>→</b><span>Створити</span><b>→</b><span>Поділитися</span></div></div></section>
+    <section className="listen section" id="listen"><p className="eyebrow">03 / STAY IN THE FREQUENCY</p><h2>Знайдемося<br /><em>на одній хвилі.</em></h2><p>Слухайте Veil of Ages та стежте за новими музичними історіями на YouTube.</p><a className="primary-link" href="https://www.youtube.com/@VeilofAges-e" target="_blank" rel="noopener noreferrer">Veil of Ages на YouTube <span>↗</span></a></section></main>
+    <footer className="site-footer"><a className="wordmark" href="#">V / A <span>VEIL OF AGES</span></a><span>МУЗИКА. ОБРАЗИ. ВІДЧУТТЯ.</span><small>© {new Date().getFullYear()} Veil of Ages</small></footer>
+  </>;
 }

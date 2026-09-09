@@ -59,7 +59,7 @@ export async function youtubeUploadRoutes(app: FastifyInstance) {
     bodyLimit: MAX_VIDEO_BYTES, logLevel: 'silent',
     onRequest: async (request, reply) => {
       const secret = request.headers['x-setup-secret'];
-      if (typeof secret !== 'string' || !setupSecretMatches(secret, process.env.YOUTUBE_SETUP_SECRET ?? '')) return reply.code(401).send({ error: 'Неправильний YOUTUBE_SETUP_SECRET.' });
+      if (!request.ownerSession?.verified && (typeof secret !== 'string' || !setupSecretMatches(secret, process.env.YOUTUBE_SETUP_SECRET ?? ''))) return reply.code(401).send({ error: 'Потрібно увійти у кабінет.' });
       if (request.headers.origin !== origin) return reply.code(403).send({ error: 'Відкрийте форму на адресі Render заново.' });
       if (busy) return reply.code(429).send({ error: 'Уже передається інше відео. Дочекайтеся завершення.' });
       busy = true;

@@ -17,6 +17,23 @@ export async function migrate(): Promise<void> {
   if (!pool) return;
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS studio_owner (
+      id INTEGER PRIMARY KEY CHECK (id=1), google_sub TEXT,
+      totp_encrypted TEXT, last_step BIGINT NOT NULL DEFAULT -1,
+      recovery_hashes JSONB NOT NULL DEFAULT '[]',
+      failures INTEGER NOT NULL DEFAULT 0, locked_until TIMESTAMPTZ
+    );
+    INSERT INTO studio_owner(id) VALUES(1) ON CONFLICT DO NOTHING;
+    CREATE TABLE IF NOT EXISTS studio_sessions (
+      token_hash TEXT PRIMARY KEY, google_sub TEXT NOT NULL,
+      verified BOOLEAN NOT NULL DEFAULT FALSE,
+      enrollment_encrypted TEXT, expires_at TIMESTAMPTZ NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS studio_login_states (
+      state_hash TEXT PRIMARY KEY, browser_hash TEXT NOT NULL,
+      verifier_encrypted TEXT NOT NULL, nonce TEXT NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS youtube_uploads (
       file_hash TEXT PRIMARY KEY,
       state TEXT NOT NULL CHECK (state IN ('uploading', 'complete', 'uncertain')),
