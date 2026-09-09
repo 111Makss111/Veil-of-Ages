@@ -38,7 +38,7 @@ export async function checkMediaTools(): Promise<void> {
   await runMediaTool(process.env.FFPROBE_PATH || 'ffprobe', ['-version'], 5000);
 }
 
-export async function renderMedia(image: string, audio: string, output: string, audioKind: string, signal?: AbortSignal): Promise<void> {
+export async function renderMedia(image: string, audio: string, output: string, audioKind: string, signal?: AbortSignal, format: 'video' | 'shorts' = 'video'): Promise<void> {
   const probe = process.env.FFPROBE_PATH || 'ffprobe';
   const common = ['-v', 'error', '-max_alloc', '67108864', '-protocol_whitelist', 'file,pipe'];
   const picture = JSON.parse(await runMediaTool(probe, [...common, '-f', 'image2', '-show_entries', 'stream=width,height', '-of', 'json', image], 15000, signal));
@@ -47,17 +47,20 @@ export async function renderMedia(image: string, audio: string, output: string, 
   const sound = JSON.parse(await runMediaTool(probe, [...common, '-f', audioKind, '-show_entries', 'format=duration:stream=codec_type', '-of', 'json', audio], 15000, signal));
   const duration = Number(sound.format?.duration);
   if (!Number.isFinite(duration) || duration < 1 || duration > MAX_DURATION || !sound.streams?.some((s: { codec_type: string }) => s.codec_type === 'audio')) throw new Error('Аудіо має тривати від 1 секунди до 5 хвилин.');
+  const targetWidth = format === 'shorts' ? 720 : 1280;
+  const targetHeight = format === 'shorts' ? 1280 : 720;
+  const renderDuration = format === 'shorts' ? Math.min(duration, 60) : duration;
   await runMediaTool(process.env.FFMPEG_PATH || 'ffmpeg', [
     '-hide_banner', '-loglevel', 'error', '-nostdin', '-n', '-max_alloc', '67108864', '-filter_threads', '1',
     '-threads', '1', '-protocol_whitelist', 'file,pipe', '-f', 'image2', '-loop', '1', '-framerate', '24', '-i', image,
     '-threads', '1', '-protocol_whitelist', 'file,pipe', '-f', audioKind, '-i', audio,
     '-map', '0:v:0', '-map', '1:a:0', '-map_metadata', '-1',
-    '-vf', 'scale=1280:720:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1',
+    '-vf', `scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=${targetWidth}:${targetHeight}:(ow-iw)/2:(oh-ih)/2,setsar=1`,
     '-c:v', 'libx264', '-threads', '1', '-preset', 'veryfast', '-tune', 'stillimage', '-crf', '23', '-maxrate', '400k', '-bufsize', '800k', '-pix_fmt', 'yuv420p',
-    '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-t', String(duration), '-shortest', '-fs', String(MAX_OUTPUT_BYTES), '-movflags', '+faststart', output
+    '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-t', String(renderDuration), '-shortest', '-fs', String(MAX_OUTPUT_BYTES), '-movflags', '+faststart', output
   ], 10 * 60 * 1000, signal);
   const result = JSON.parse(await runMediaTool(probe, [...common, '-show_entries', 'format=duration:stream=codec_type,width,height', '-of', 'json', output], 15000, signal));
   const size = (await stat(output)).size;
   const outputDuration = Number(result.format?.duration);
-  if (size > MAX_OUTPUT_BYTES || !Number.isFinite(outputDuration) || Math.abs(outputDuration - duration) > 0.5 || !result.streams?.some((s: { codec_type: string }) => s.codec_type === 'audio') || !result.streams?.some((s: { width: number; height: number }) => s.width === 1280 && s.height === 720)) throw new Error('Результат не пройшов перевірку тривалості або розміру.');
+  if (size > MAX_OUTPUT_BYTES || !Number.isFinite(outputDuration) || Math.abs(outputDuration - renderDuration) > 0.5 || !result.streams?.some((s: { codec_type: string }) => s.codec_type === 'audio') || !result.streams?.some((s: { width: number; height: number }) => s.width === targetWidth && s.height === targetHeight)) throw new Error('Результат не пройшов перевірку тривалості або розміру.');
 }

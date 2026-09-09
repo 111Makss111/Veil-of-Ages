@@ -30,6 +30,7 @@ test('media files require authentication; invalid origin is rejected', async () 
   try {
     assert.equal((await app.inject('/media')).statusCode, 200);
     assert.equal((await app.inject('/media/jobs/not-a-job/file')).statusCode, 401);
+    assert.equal((await app.inject({ method: 'POST', url: '/media/jobs?format=invalid', headers: { origin: 'https://api.example.test', 'x-setup-secret': process.env.YOUTUBE_SETUP_SECRET! } })).statusCode, 400);
     assert.equal((await app.inject({ method: 'POST', url: '/media/jobs', headers: { origin: 'https://evil.test', 'x-setup-secret': process.env.YOUTUBE_SETUP_SECRET! } })).statusCode, 403);
     assert.equal((await app.inject({ url: '/media/jobs/not-a-job', headers: { 'x-setup-secret': process.env.YOUTUBE_SETUP_SECRET! } })).statusCode, 404);
   } finally { await app.close(); }

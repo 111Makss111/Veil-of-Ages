@@ -47,6 +47,8 @@ export async function mediaRoutes(app: FastifyInstance) {
   app.get('/media/app.js', async (_req, reply) => reply.type('application/javascript').send(mediaScript));
   app.get('/media/style.css', async (_req, reply) => reply.type('text/css').send(mediaCss));
   app.post('/media/jobs', { logLevel: 'silent' }, async (request, reply) => {
+    const format = (request.query as { format?: string }).format ?? 'video';
+    if (format !== 'video' && format !== 'shorts') return reply.code(400).send({ error: 'Оберіть формат video або shorts.' });
     if (busy) return reply.code(429).send({ error: 'Зараз створюється інше відео. Спробуйте після завершення.' });
     busy = true;
     let directory: string | undefined;
@@ -76,7 +78,7 @@ export async function mediaRoutes(app: FastifyInstance) {
       const id = randomBytes(24).toString('hex');
       const job: Job = { directory, state: 'processing', until: Date.now() + 30 * 60000, controller: new AbortController() };
       jobs.set(id, job);
-      job.task = renderMedia(files.image.path, files.audio.path, join(directory, 'video.mp4'), files.audio.kind, job.controller.signal)
+      job.task = renderMedia(files.image.path, files.audio.path, join(directory, 'video.mp4'), files.audio.kind, job.controller.signal, format)
         .then(() => { job.state = 'ready'; })
         .catch(error => { job.state = 'error'; job.error = error instanceof Error ? error.message : 'Помилка створення відео.'; })
         .finally(() => { busy = false; job.until = Date.now() + 30 * 60000; });
