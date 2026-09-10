@@ -110,7 +110,7 @@ export async function renderMedia(image: string, audio: string, output: string, 
     '-c:v', 'libx264', '-threads', '2', '-preset', 'superfast', '-crf', '22', '-maxrate', '900k', '-bufsize', '1800k', '-pix_fmt', 'yuv420p',
     '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-t', String(renderDuration), '-shortest', '-fs', String(MAX_OUTPUT_BYTES), '-movflags', '+faststart',
     '-progress','pipe:1','-nostats',output
-  ], 30 * 60 * 1000, signal, parseProgress);
+  ], 90 * 60 * 1000, signal, parseProgress);
   const result = JSON.parse(await runMediaTool(probe, [...common, '-show_entries', 'format=duration:stream=codec_type,width,height', '-of', 'json', output], 15000, signal));
   const size = (await stat(output)).size;
   const outputDuration = Number(result.format?.duration);

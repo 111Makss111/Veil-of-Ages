@@ -97,20 +97,20 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     const task=(async()=>{
       let dir:string|undefined,stage='preparing',progress=Number(release.progress)||2,lastStage='',lastProgress=-1,lastWrite=0;
       let writes=Promise.resolve();
-      const update=(nextStage:string,nextProgress:number,detail:string,force=false)=>{
+      const update=(nextStage:string,nextProgress:number,detail:string,force=false,media?:{seconds:number;duration:number})=>{
         stage=nextStage;progress=Math.max(progress,Math.min(99,Math.round(nextProgress)));
         const now=Date.now();
         if(!force&&nextStage===lastStage&&progress<=lastProgress&&now-lastWrite<2000)return writes;
         if(!force&&nextStage===lastStage&&progress-lastProgress<1&&now-lastWrite<2000)return writes;
         lastStage=nextStage;lastProgress=progress;lastWrite=now;
-        writes=writes.then(async()=>{await requirePool().query("UPDATE factory_releases SET stage=$2,progress=$3,progress_detail=$4,updated_at=NOW() WHERE id=$1 AND state='rendering'",[release.id,nextStage,progress,detail]);}).catch(()=>{});
+        writes=writes.then(async()=>{await requirePool().query("UPDATE factory_releases SET stage=$2,progress=$3,progress_detail=$4,processed_seconds=COALESCE($5,processed_seconds),render_duration=COALESCE($6,render_duration),updated_at=NOW() WHERE id=$1 AND state='rendering'",[release.id,nextStage,progress,detail,media?.seconds??null,media?.duration??null]);}).catch(()=>{});
         return writes;
       };
       const failure=(error:unknown)=>{
         if(stage==='generating-image')return 'Workers AI не завершив створення обкладинки. Перевір доступ до Workers AI та повтори з тією самою концепцією.';
         if(stage==='downloading')return 'Не вдалося отримати матеріали з R2. Перевір підключення сховища та повтори.';
         if(stage==='saving-cover'||stage==='uploading')return 'R2 не підтвердив збереження файла. Перевір сховище перед повтором.';
-        if(stage==='rendering'&&error instanceof MediaToolError&&error.reason==='timeout')return 'Монтаж не вклався у 30 хвилин. Трек і обкладинка збережені; повтор використає ті самі матеріали.';
+        if(stage==='rendering'&&error instanceof MediaToolError&&error.reason==='timeout')return 'Монтаж не вклався у 90 хвилин. Трек і обкладинка збережені; повтор використає ті самі матеріали.';
         if(stage==='rendering'&&error instanceof MediaToolError&&error.reason==='aborted')return 'Монтаж перервано зупинкою або перезапуском сервера. Можна повторити з тими самими матеріалами.';
         if(stage==='rendering'&&error instanceof MediaToolError&&error.reason==='spawn')return 'FFmpeg не запустився на сервері. Потрібно перевірити інструменти Render.';
         if(stage==='rendering')return 'FFmpeg зупинив монтаж. Трек і обкладинка збережені; повтор використає ті самі матеріали.';
@@ -136,11 +136,12 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
           await s.put(cover.object_key,generated.data,generated.type);await writeFile(image,generated.data);
           await requirePool().query("UPDATE factory_assets SET state='ready',bytes=$2,type=$3 WHERE id=$1",[cover.id,generated.data.length,generated.type]);
         }
+        await requirePool().query("UPDATE factory_releases SET render_started_at=NOW(),processed_seconds=0,render_duration=NULL,updated_at=NOW() WHERE id=$1 AND state='rendering'",[release.id]);
         await update('rendering',28,'Запускаємо cinematic-монтаж і обробку звуку.',true);
         await (options.render??renderMedia)(image,audio,video,track.type==='audio/wav'?'wav':'mp3',controller.signal,'video',release.recipe.visualPreset,p=>{
           const processed=Math.min(p.duration,p.seconds),overall=28+p.percent*.60;
           const clock=(seconds:number)=>Math.floor(seconds/60)+':'+String(Math.floor(seconds%60)).padStart(2,'0');
-          void update('rendering',overall,'Змонтовано '+clock(processed)+' із '+clock(p.duration)+' музики.');
+          void update('rendering',overall,'Змонтовано '+clock(processed)+' із '+clock(p.duration)+' музики.',false,{seconds:processed,duration:p.duration});
         });
         await update('verifying',91,'Перевіряємо тривалість, звук, роздільність і розмір відео.',true);
         const result=await readFile(video);if(result.length>MAX_OUTPUT_BYTES)throw Error('Output exceeds reservation');
@@ -169,7 +170,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     needStorage();const id=uuid.parse((req.params as {id:string}).id);
     const release=await factoryLock(async db=>{
       if((await db.query("SELECT id FROM factory_releases WHERE state='rendering'")).rowCount)throw new FactoryError(409,'Лінія зайнята.');
-      const r=(await db.query("UPDATE factory_releases SET state='rendering',stage='preparing',progress=2,progress_detail='Готуємо безпечний повтор із тими самими матеріалами.',error=NULL,started_at=NOW(),updated_at=NOW() WHERE id=$1 AND state='failed' RETURNING *",[id])).rows[0];
+      const r=(await db.query("UPDATE factory_releases SET state='rendering',stage='preparing',progress=2,progress_detail='Готуємо безпечний повтор із тими самими матеріалами.',error=NULL,started_at=NOW(),render_started_at=NULL,processed_seconds=NULL,render_duration=NULL,updated_at=NOW() WHERE id=$1 AND state='failed' RETURNING *",[id])).rows[0];
       if(!r)throw new FactoryError(409,'Повтор доступний лише для невдалого складання.');return r;
     });work(release);return reply.code(202).send({id});
   });

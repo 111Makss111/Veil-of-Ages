@@ -61,8 +61,8 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
     const key=randomUUID(),start=await post('/api/factory/releases',{requestKey:key});assert.equal(start.statusCode,202,start.body);
     const id=start.json().id;assert.equal((await post('/api/factory/releases',{requestKey:key})).json().id,id);
     await waitState(id,'failed');assert.equal(renders,1);assert.equal(generated,1);
-    const stopped=(await q('SELECT * FROM factory_releases WHERE id=$1',[id])).rows[0] as {stage:string;progress:number;error:string;started_at:Date};
-    assert.equal(stopped.stage,'rendering');assert.equal(stopped.progress,58);assert.match(stopped.error,/FFmpeg/);assert.ok(stopped.started_at);
+    const stopped=(await q('SELECT * FROM factory_releases WHERE id=$1',[id])).rows[0] as {stage:string;progress:number;error:string;started_at:Date;render_started_at:Date;processed_seconds:number;render_duration:number};
+    assert.equal(stopped.stage,'rendering');assert.equal(stopped.progress,58);assert.match(stopped.error,/FFmpeg/);assert.ok(stopped.started_at);assert.ok(stopped.render_started_at);assert.equal(stopped.processed_seconds,60);assert.equal(stopped.render_duration,120);
     assert.equal((await post('/api/factory/releases',{requestKey:randomUUID()})).statusCode,409); // Track remains reserved.
     renderFail=false;assert.equal((await post('/api/factory/releases/'+id+'/retry',{})).statusCode,202);
     await waitState(id,'review');assert.equal(renders,2);assert.equal(generated,1);assert.equal(renderPresets.length,2);

@@ -27,13 +27,17 @@ CREATE TABLE IF NOT EXISTS factory_releases (
  title TEXT NOT NULL, recipe JSONB NOT NULL,
  state TEXT NOT NULL CHECK(state IN ('rendering','review','failed','publishing','private','uncertain')),
  error TEXT, video_id TEXT, progress INTEGER NOT NULL DEFAULT 0, stage TEXT NOT NULL DEFAULT 'queued', progress_detail TEXT NOT NULL DEFAULT '',
- started_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+ started_at TIMESTAMPTZ, render_started_at TIMESTAMPTZ, processed_seconds DOUBLE PRECISION, render_duration DOUBLE PRECISION,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ALTER TABLE factory_releases ALTER COLUMN cover_id DROP NOT NULL;
 ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS progress INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS stage TEXT NOT NULL DEFAULT 'queued';
 ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS progress_detail TEXT NOT NULL DEFAULT '';
 ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
+ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS render_started_at TIMESTAMPTZ;
+ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS processed_seconds DOUBLE PRECISION;
+ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS render_duration DOUBLE PRECISION;
 CREATE UNIQUE INDEX IF NOT EXISTS factory_one_render ON factory_releases((true)) WHERE state='rendering';
 `;
 export class FactoryError extends Error { constructor(public status: number, message: string) { super(message); } }
