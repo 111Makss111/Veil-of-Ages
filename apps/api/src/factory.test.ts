@@ -37,7 +37,7 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
   app.decorateRequest('ownerSession',undefined);app.addHook('onRequest',async req=>{if(authorized)req.ownerSession={token_hash:'test',google_sub:'test',verified:true,enrollment_encrypted:null};});
   app.addContentTypeParser('video/mp4',{parseAs:'buffer'},(_req,b,done)=>done(null,b));
   let published=0;app.post('/youtube/upload',async req=>{published++;assert.equal((req.query as {children:string}).children,'no');return {videoId:'abcdefghijk'};});
-  await app.register(factoryRoutes,{storage,probe:async()=>120,imageGenerator:async()=>{generated++;return {data:Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),Buffer.alloc(80)]),type:'image/png'};},render:async(_image:string,_audio:string,out:string,_kind:string,_signal?:AbortSignal,_format?:'video'|'shorts',preset?:string)=>{renders++;if(preset)renderPresets.push(preset);if(renderFail)throw Error('test render interruption');await writeFile(out,Buffer.from('0000ftypisom-fake-render-test'));}});
+  await app.register(factoryRoutes,{storage,probe:async()=>120,imageGenerator:async()=>{generated++;return {data:Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),Buffer.alloc(80)]),type:'image/png'};},render:async(_image:string,_audio:string,out:string,_kind:string,_signal?:AbortSignal,_format?:'video'|'shorts',preset?:string,onProgress?:(p:{percent:number;seconds:number;duration:number})=>void)=>{renders++;if(preset)renderPresets.push(preset);onProgress?.({percent:50,seconds:60,duration:120});if(renderFail)throw Error('test render interruption');await writeFile(out,Buffer.from('0000ftypisom-fake-render-test'));}});
   const headers={origin:'https://api.example.test'};
   const post=(url:string,payload:Record<string,unknown>)=>app.inject({method:'POST',url,headers,payload});
   const upload=(kind:string,body:Buffer,name:string)=>app.inject({method:'POST',url:'/api/factory/assets?kind='+kind+'&vocal=instrumental',headers:{...headers,'content-type':'multipart/form-data; boundary=testboundary'},payload:Buffer.concat([Buffer.from('--testboundary\r\nContent-Disposition: form-data; name="file"; filename="'+name+'"\r\nContent-Type: application/octet-stream\r\n\r\n'),body,Buffer.from('\r\n--testboundary--\r\n')])});
@@ -61,10 +61,12 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
     const key=randomUUID(),start=await post('/api/factory/releases',{requestKey:key});assert.equal(start.statusCode,202,start.body);
     const id=start.json().id;assert.equal((await post('/api/factory/releases',{requestKey:key})).json().id,id);
     await waitState(id,'failed');assert.equal(renders,1);assert.equal(generated,1);
+    const stopped=(await q('SELECT * FROM factory_releases WHERE id=$1',[id])).rows[0] as {stage:string;progress:number;error:string;started_at:Date};
+    assert.equal(stopped.stage,'rendering');assert.equal(stopped.progress,58);assert.match(stopped.error,/FFmpeg/);assert.ok(stopped.started_at);
     assert.equal((await post('/api/factory/releases',{requestKey:randomUUID()})).statusCode,409); // Track remains reserved.
     renderFail=false;assert.equal((await post('/api/factory/releases/'+id+'/retry',{})).statusCode,202);
     await waitState(id,'review');assert.equal(renders,2);assert.equal(generated,1);assert.equal(renderPresets.length,2);
-    const release=(await q('SELECT * FROM factory_releases WHERE id=$1',[id])).rows[0] as {track_id:string;output_id:string;recipe:{coverMode:string;prompt:string}};assert.equal(release.track_id,audio.json().id);assert.equal(release.recipe.coverMode,'ai');assert.match(release.recipe.prompt,/Dark Fantasy/);
+    const release=(await q('SELECT * FROM factory_releases WHERE id=$1',[id])).rows[0] as {track_id:string;output_id:string;progress:number;stage:string;recipe:{coverMode:string;prompt:string}};assert.equal(release.track_id,audio.json().id);assert.equal(release.recipe.coverMode,'ai');assert.match(release.recipe.prompt,/Dark Fantasy/);assert.equal(release.progress,100);assert.equal(release.stage,'complete');
     assert.equal((await app.inject('/api/factory/assets/'+release.output_id+'/file')).statusCode,200);
     authorized=false;assert.equal((await app.inject('/api/factory/assets/'+release.output_id+'/file')).statusCode,401);authorized=true;
     assert.equal((await post('/api/factory/releases/'+id+'/publish',{children:'no',synthetic:'yes',rights:false})).statusCode,400);assert.equal(published,0);

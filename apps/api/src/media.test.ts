@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { Script } from 'node:vm';
 import Fastify from 'fastify';
-import { buildCinematicFilters, MAX_OUTPUT_BYTES, mediaKind, runMediaTool } from './media-render.js';
+import { buildCinematicFilters, MAX_OUTPUT_BYTES, mediaKind, runMediaTool, MediaToolError } from './media-render.js';
 import { mediaScript } from './media-ui.js';
 
 process.env.PUBLIC_API_URL = 'https://api.example.test';
@@ -22,6 +22,10 @@ test('supported file signatures and browser script syntax', () => {
 
 test('missing executable fails without hanging or exposing paths', async () => {
   await assert.rejects(runMediaTool('nonexistent-veil-tool', [], 1000), /Не вдалося обробити/);
+});
+
+test('media tool reports a safe timeout reason', async () => {
+  await assert.rejects(runMediaTool(process.execPath, ['-e','setTimeout(()=>{},1000)'], 20), error => error instanceof MediaToolError && error.reason === 'timeout');
 });
 
 test('cinematic presets build bounded video and audio filter graphs', () => {

@@ -26,9 +26,14 @@ CREATE TABLE IF NOT EXISTS factory_releases (
  cover_id UUID NOT NULL REFERENCES factory_assets(id), output_id UUID NOT NULL REFERENCES factory_assets(id),
  title TEXT NOT NULL, recipe JSONB NOT NULL,
  state TEXT NOT NULL CHECK(state IN ('rendering','review','failed','publishing','private','uncertain')),
- error TEXT, video_id TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+ error TEXT, video_id TEXT, progress INTEGER NOT NULL DEFAULT 0, stage TEXT NOT NULL DEFAULT 'queued', progress_detail TEXT NOT NULL DEFAULT '',
+ started_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ALTER TABLE factory_releases ALTER COLUMN cover_id DROP NOT NULL;
+ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS progress INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS stage TEXT NOT NULL DEFAULT 'queued';
+ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS progress_detail TEXT NOT NULL DEFAULT '';
+ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
 CREATE UNIQUE INDEX IF NOT EXISTS factory_one_render ON factory_releases((true)) WHERE state='rendering';
 `;
 export class FactoryError extends Error { constructor(public status: number, message: string) { super(message); } }
@@ -85,7 +90,7 @@ export async function startRelease(storage: ObjectStore, requestKey: string, gen
     await db.query("INSERT INTO factory_assets(id,kind,hash,object_key,name,bytes,type,vocal,state) VALUES($1,'video',$2,$3,$4,$5,'video/mp4',$6,'reserved')",[outputId,id,'factory/'+outputId,'Випуск.mp4',MAX_OUTPUT_BYTES,recipe.vocal]);
     const title=concept?.title??track.name.replace(/\.[^.]+$/,'').replace(/[<>\x00-\x1f]/g,'').slice(0,75)+' | Dark Fantasy Ambient';
     const visualPreset=chooseVisualPreset(recipe.visual_preset,track.hash,track.theme);
-    const release=(await db.query("INSERT INTO factory_releases(id,request_key,track_id,cover_id,output_id,title,recipe,state) VALUES($1,$2,$3,$4,$5,$6,$7,'rendering') RETURNING *",[id,requestKey,track.id,cover.id,outputId,title.slice(0,100),JSON.stringify({genre:'Dark Fantasy / Medieval Ambient',vocal:recipe.vocal,revision:recipe.revision,theme:track.theme,visualPreset,coverMode:generateImage?'ai':'manual',conceptHash:concept?.hash,prompt:concept?.prompt,seed:concept?.seed,scene:concept?.scene})])).rows[0];
+    const release=(await db.query("INSERT INTO factory_releases(id,request_key,track_id,cover_id,output_id,title,recipe,state,progress,stage,progress_detail,started_at) VALUES($1,$2,$3,$4,$5,$6,$7,'rendering',2,'preparing','Резервуємо місце та готуємо виробничу лінію.',NOW()) RETURNING *",[id,requestKey,track.id,cover.id,outputId,title.slice(0,100),JSON.stringify({genre:'Dark Fantasy / Medieval Ambient',vocal:recipe.vocal,revision:recipe.revision,theme:track.theme,visualPreset,coverMode:generateImage?'ai':'manual',conceptHash:concept?.hash,prompt:concept?.prompt,seed:concept?.seed,scene:concept?.scene})])).rows[0];
     return { release, fresh: true };
   });
 }
