@@ -5,7 +5,7 @@ import { config } from './config.js';
 import { requirePool } from './db.js';
 import { getYoutubeRefreshToken, googleToken, setupSecretMatches } from './youtube.js';
 
-export const MAX_VIDEO_BYTES = 25 * 1024 * 1024;
+export const MAX_VIDEO_BYTES = 48 * 1024 * 1024;
 const metadataSchema = z.object({
   title: z.string().trim().min(1).max(100).regex(/^[^<>\u0000-\u001f]+$/),
   children: z.enum(['yes', 'no']), synthetic: z.enum(['yes', 'no'])

@@ -21,3 +21,13 @@ services:
         generateValue: true
       - key: LINK_TTL_MINUTES
         value: 10
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: CLOUDFLARE_AI_TOKEN
+        sync: false

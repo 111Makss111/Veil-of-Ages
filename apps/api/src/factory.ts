@@ -11,12 +11,15 @@ import { mediaKind, renderMedia, runMediaTool, checkMediaTools, MAX_OUTPUT_BYTES
 import { createObjectStore, STORAGE_LIMIT, INPUT_LIMIT, type ObjectStore } from './factory-storage.js';
 import { FactoryError, reserveAsset, startRelease, factoryLock } from './factory-store.js';
 import { factoryPage, factoryCss, factoryScript } from './factory-ui.js';
+import { createCloudflareImageGenerator, type ImageGenerator } from './factory-ai.js';
 
 const uuid=z.string().uuid();
 const vocal=z.enum(['instrumental','choir']);
+const visualPreset=z.enum(['auto','ancient-mist','ember-glow','moonlit-ruins']);
 const UPLOAD_MAX=25*1024*1024;
-export async function factoryRoutes(app: FastifyInstance, options: { storage?: ObjectStore; render?: typeof renderMedia; probe?: (file: string, kind: string) => Promise<number> } = {}) {
+export async function factoryRoutes(app: FastifyInstance, options: { storage?: ObjectStore; render?: typeof renderMedia; probe?: (file: string, kind: string) => Promise<number>; imageGenerator?: ImageGenerator|null } = {}) {
   const storage=options.storage ?? createObjectStore();
+  const imageGenerator=options.imageGenerator===undefined?createCloudflareImageGenerator():options.imageGenerator;
   const tasks=new Set<Promise<void>>(); const controller=new AbortController(); let uploading=false;
   const needStorage=()=>{if(!storage)throw new FactoryError(503,'Підключи приватне сховище R2 в Render. Файли ще не завантажуються.');return storage;};
   app.addHook('onRequest',async(req,reply)=>{
@@ -42,7 +45,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
       db.query('SELECT * FROM factory_releases ORDER BY created_at DESC LIMIT 100'),
       db.query(`SELECT vocal,COUNT(*) AS available FROM factory_assets a WHERE kind='audio' AND state='ready' AND NOT EXISTS(SELECT 1 FROM factory_releases r WHERE r.track_id=a.id) GROUP BY vocal`)
     ]);
-    return {configured:!!storage,recipe:recipe.rows[0],assets:assets.rows,releases:releases.rows,availableByVocal:Object.fromEntries(counts.rows.map(r=>[r.vocal,Number(r.available)])),limit:STORAGE_LIMIT,inputLimit:INPUT_LIMIT};
+    return {configured:!!storage,aiConfigured:!!imageGenerator,recipe:recipe.rows[0],assets:assets.rows,releases:releases.rows,availableByVocal:Object.fromEntries(counts.rows.map(r=>[r.vocal,Number(r.available)])),limit:STORAGE_LIMIT,inputLimit:INPUT_LIMIT};
   });
   app.get('/api/factory/storage',async()=>{
     const s=needStorage();
@@ -54,9 +57,9 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     });
   });
   app.post('/api/factory/recipe',async req=>{
-    const body=z.object({vocal,coverId:uuid.nullable(),revision:z.number().int().positive()}).strict().parse(req.body);
+    const body=z.object({vocal,visualPreset,coverId:uuid.nullable(),revision:z.number().int().positive()}).strict().parse(req.body);
     if(body.coverId&&!(await requirePool().query("SELECT id FROM factory_assets WHERE id=$1 AND kind='image' AND state='ready'",[body.coverId])).rowCount)throw new FactoryError(400,'Обкладинка ще не збережена.');
-    const result=await requirePool().query('UPDATE factory_recipe SET vocal=$1,cover_id=$2,revision=revision+1 WHERE id=1 AND revision=$3 RETURNING *',[body.vocal,body.coverId,body.revision]);
+    const result=await requirePool().query('UPDATE factory_recipe SET vocal=$1,cover_id=$2,visual_preset=$3,revision=revision+1 WHERE id=1 AND revision=$4 RETURNING *',[body.vocal,body.coverId,body.visualPreset,body.revision]);
     if(!result.rowCount)throw new FactoryError(409,'Рецепт змінився в іншій вкладці. Онови сторінку.');
     return result.rows[0];
   });
@@ -98,8 +101,15 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
         const get=async(id:string)=>{const a=(await requirePool().query('SELECT * FROM factory_assets WHERE id=$1',[id])).rows[0];if(!a)throw Error('Missing asset');return a;};
         const track=await get(release.track_id),cover=await get(release.cover_id),output=await get(release.output_id);
         const audio=join(dir,'audio'),image=join(dir,'image'),video=join(dir,'video.mp4');
-        await writeFile(audio,await s.get(track.object_key,UPLOAD_MAX));await writeFile(image,await s.get(cover.object_key,8*1024*1024));
-        await (options.render??renderMedia)(image,audio,video,track.type==='audio/wav'?'wav':'mp3',controller.signal,'video');
+        await writeFile(audio,await s.get(track.object_key,UPLOAD_MAX));
+        if(cover.state==='ready')await writeFile(image,await s.get(cover.object_key,8*1024*1024));
+        else{
+          if(release.recipe.coverMode!=='ai'||!imageGenerator)throw Error('Image generator unavailable');
+          const generated=await imageGenerator(release.recipe.prompt,release.recipe.seed,controller.signal);
+          await s.put(cover.object_key,generated.data,generated.type);await writeFile(image,generated.data);
+          await requirePool().query("UPDATE factory_assets SET state='ready',bytes=$2,type=$3 WHERE id=$1",[cover.id,generated.data.length,generated.type]);
+        }
+        await (options.render??renderMedia)(image,audio,video,track.type==='audio/wav'?'wav':'mp3',controller.signal,'video',release.recipe.visualPreset);
         const result=await readFile(video);if(result.length>MAX_OUTPUT_BYTES)throw Error('Output exceeds reservation');
         await s.put(output.object_key,result,'video/mp4');
         await factoryLock(async db=>{
@@ -107,14 +117,14 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
           await db.query("UPDATE factory_releases SET state='review',error=NULL,updated_at=NOW() WHERE id=$1 AND state='rendering'",[release.id]);
         });
       }catch{
-        await requirePool().query("UPDATE factory_releases SET state='failed',error='Складання не завершено. Перевір R2, FFmpeg і файли; повтор використає той самий трек та обкладинку.',updated_at=NOW() WHERE id=$1 AND state='rendering'",[release.id]).catch(()=>{});
+        await requirePool().query("UPDATE factory_releases SET state='failed',error='Складання не завершено. Перевір Workers AI, R2 та FFmpeg; повтор використає той самий трек, концепцію і seed.',updated_at=NOW() WHERE id=$1 AND state='rendering'",[release.id]).catch(()=>{});
       }finally{if(dir)await rm(dir,{recursive:true,force:true});}
     })();tasks.add(task);void task.finally(()=>tasks.delete(task));
   }
   app.post('/api/factory/releases',async(req,reply)=>{
     const {requestKey}=z.object({requestKey:uuid}).strict().parse(req.body);
     const s=needStorage();if(!options.render)await checkMediaTools();
-    const {release,fresh}=await startRelease(s,requestKey);if(fresh)work(release);
+    const {release,fresh}=await startRelease(s,requestKey,!!imageGenerator);if(fresh)work(release);
     return reply.code(fresh?202:200).send({id:release.id,state:release.state});
   });
   app.post('/api/factory/releases/:id/retry',async(req,reply)=>{

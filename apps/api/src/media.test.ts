@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { Script } from 'node:vm';
 import Fastify from 'fastify';
-import { mediaKind, runMediaTool } from './media-render.js';
+import { buildCinematicFilters, MAX_OUTPUT_BYTES, mediaKind, runMediaTool } from './media-render.js';
 import { mediaScript } from './media-ui.js';
 
 process.env.PUBLIC_API_URL = 'https://api.example.test';
@@ -22,6 +22,19 @@ test('supported file signatures and browser script syntax', () => {
 
 test('missing executable fails without hanging or exposing paths', async () => {
   await assert.rejects(runMediaTool('nonexistent-veil-tool', [], 1000), /Не вдалося обробити/);
+});
+
+test('cinematic presets build bounded video and audio filter graphs', () => {
+  for (const preset of ['ancient-mist','ember-glow','moonlit-ruins'] as const) {
+    const filters = buildCinematicFilters(1280, 720, 120, preset);
+    assert.match(filters.video, /zoompan=/);
+    assert.match(filters.video, /gblur=/);
+    assert.match(filters.video, /vignette=/);
+    assert.match(filters.video, /noise=/);
+    assert.match(filters.audio, /loudnorm=/);
+    assert.match(filters.audio, /afade=t=out:st=115\.000/);
+    assert.ok(!filters.video.includes('NaN'));
+  }
 });
 
 test('media files require authentication; invalid origin is rejected', async () => {
@@ -64,6 +77,6 @@ test('real picture and audio produce downloadable MP4 through job routes', { ski
     assert.equal(result.headers['content-type'], 'video/mp4');
     assert.equal(result.rawPayload.toString('ascii', 4, 8), 'ftyp');
     assert.ok(result.rawPayload.length > 10000);
-    assert.ok(result.rawPayload.length <= 24 * 1024 * 1024);
+    assert.ok(result.rawPayload.length <= MAX_OUTPUT_BYTES);
   } finally { await app.close(); }
 });
