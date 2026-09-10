@@ -8,6 +8,7 @@ import { generateSong, generatorConfig } from './songs-provider.js';
 import { songsPage, songsCss, songsScript } from './songs-ui.js';
 
 const idSchema = z.object({ id: z.uuid() });
+const profileIdSchema = z.union([z.enum(['pirate', 'viking']), z.uuid()]);
 const dailyLimit = () => {
   const value = Number(process.env.SONG_DAILY_LIMIT ?? 10);
   return Number.isInteger(value) && value >= 1 && value <= 100 ? value : 10;
@@ -31,8 +32,15 @@ export async function songsRoutes(app: FastifyInstance) {
   app.get('/songs/app.js', async (_req, reply) => reply.type('application/javascript').send(songsScript));
   app.get('/api/songs/config', async () => ({ ...generatorConfig(), dailyLimit: dailyLimit() }));
   app.get('/api/songs/profiles', async () => ({ profiles: (await requirePool().query('SELECT * FROM song_profiles ORDER BY id')).rows }));
+  app.post('/api/songs/profiles', { bodyLimit: 10000, logLevel: 'silent' }, async request => {
+    const { id, settings } = z.object({ id: z.uuid(), settings: profileSchema }).strict().parse(request.body);
+    await requirePool().query('INSERT INTO song_profiles(id,settings) VALUES($1,$2) ON CONFLICT DO NOTHING', [id, JSON.stringify(settings)]);
+    const saved = (await requirePool().query('SELECT * FROM song_profiles WHERE id=$1', [id])).rows[0];
+    if (Object.keys(settings).some(key => saved.settings[key] !== settings[key as keyof typeof settings])) throw new SongError(409, 'Цей ідентифікатор стилю вже використаний. Оновіть каталог.');
+    return saved;
+  });
   app.post('/api/songs/profiles/:id', { bodyLimit: 10000, logLevel: 'silent' }, async request => {
-    const { id } = z.object({ id: z.enum(['pirate', 'viking']) }).parse(request.params);
+    const { id } = z.object({ id: profileIdSchema }).parse(request.params);
     const { revision, settings } = z.object({ revision: z.number().int().positive(), settings: profileSchema }).strict().parse(request.body);
     const result = await requirePool().query('UPDATE song_profiles SET settings=$2,revision=revision+1 WHERE id=$1 AND revision=$3 RETURNING *', [id, JSON.stringify(settings), revision]);
     if (!result.rowCount) throw new SongError(409, 'Стиль змінився в іншій вкладці. Оновіть сторінку перед збереженням.');
@@ -48,7 +56,8 @@ export async function songsRoutes(app: FastifyInstance) {
     return { projects: result.rows.slice(0,20), hasMore: result.rows.length > 20 };
   });
   app.post('/api/songs/projects', { bodyLimit: 10000, logLevel: 'silent' }, async request => {
-    const data = z.object({ id: z.uuid(), name: z.string().trim().min(3).max(100), profileId: z.enum(['pirate','viking']), brief: z.string().trim().min(20).max(3000) }).strict().parse(request.body);
+    const data = z.object({ id: z.uuid(), name: z.string().trim().min(3).max(100), profileId: profileIdSchema, brief: z.string().trim().min(20).max(3000) }).strict().parse(request.body);
+    if (!(await requirePool().query('SELECT id FROM song_profiles WHERE id=$1', [data.profileId])).rowCount) throw new SongError(400, 'Спочатку збережіть обраний стиль.');
     await requirePool().query('INSERT INTO song_projects(id,name,profile_id,brief) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING', [data.id,data.name,data.profileId,data.brief]);
     const saved = (await requirePool().query('SELECT * FROM song_projects WHERE id=$1', [data.id])).rows[0];
     if (saved.name !== data.name || saved.profile_id !== data.profileId || saved.brief !== data.brief) throw new SongError(409, 'Ідентифікатор уже використаний іншим проєктом.');
