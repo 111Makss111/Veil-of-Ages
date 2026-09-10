@@ -70,6 +70,8 @@ export async function migrate(): Promise<void> {
   const { songsMigration, seedSongs } = await import('./songs-store.js');
   await pool.query(songsMigration);
   await seedSongs(pool);
+  const { factoryMigration } = await import('./factory-store.js');
+  await pool.query(factoryMigration);
 }
 
 export function requirePool(): pg.Pool {
