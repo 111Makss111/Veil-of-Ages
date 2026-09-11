@@ -2,7 +2,9 @@ import { createHash } from 'node:crypto';
 import { mediaKind } from './media-render.js';
 
 export const MAX_GENERATED_IMAGE_BYTES = 8 * 1024 * 1024;
-export type ReleaseConcept = { hash: string; title: string; prompt: string; seed: number; scene: string };
+export const GENERATED_SCENE_COUNT = 3;
+export type SceneConcept = { hash:string; prompt:string; seed:number; scene:string; label:string };
+export type ReleaseConcept = { hash: string; title: string; prompt: string; seed: number; scene: string; scenes:SceneConcept[] };
 export type ImageGenerator = (prompt: string, seed: number, signal?: AbortSignal) => Promise<{ data: Buffer; type: 'image/jpeg'|'image/png' }>;
 
 const places = ['a drowned abbey','a ruined mountain citadel','an ancient forest chapel','a forgotten royal library','a black-stone monastery','a silent village beneath a cliff','a crumbling bridge over an endless gorge','a lonely keep beside a frozen lake'];
@@ -19,9 +21,20 @@ export function buildReleaseConcept(trackHash: string, attempt = 0): ReleaseConc
   const placeTitle=place.replace(/^(a|an|the) /,'').split(' ').map(v=>v.charAt(0).toUpperCase()+v.slice(1)).join(' ');
   const titlePrefixes=['Echoes of','Beneath','Beyond','The Silence of','Dreams Beneath','Lament for'];
   const title=pick(titlePrefixes,byte(5))+' '+placeTitle;
-  const scene=`${place}; ${subject}; ${climate}; ${lighting}; ${composition}`;
-  const prompt=`Create an original 16:9 cinematic cover for a Dark Fantasy / Medieval Ambient music release. Scene: ${scene}. Forest green, slate, charcoal and muted antique gold palette. Epic but quiet, melancholic, mysterious and human. Painterly realism, intricate medieval textures, believable atmospheric depth, premium album artwork, clear focal point, generous negative space near the edges for video motion. Completely original setting and character design. No modern objects, no readable text, no letters, no typography, no logo, no watermark, no border, no duplicate people, no celebrity likeness.`;
-  return {hash:createHash('sha256').update(scene).digest('hex'),title:title.slice(0,100),prompt,seed:digest.readUInt32BE(6)&0x7fffffff,scene};
+  const story=[
+    {label:'Вступ',shot:'wide establishing view that reveals the place before the story begins',moment:`${subject} appears small and distant`},
+    {label:'Розвиток',shot:composition,moment:`the same ${subject.replace(/^(a|an) /,'')} is now the clear focal point and the atmosphere grows heavier`},
+    {label:'Кульмінація',shot:'dramatic cinematic culmination with strong foreground silhouettes and deep perspective',moment:`the same ${subject.replace(/^(a|an) /,'')} faces the heart of the mystery`}
+  ];
+  const scenes=story.map((part,index)=>{
+    const scene=`${part.label}: ${place}; ${part.moment}; ${climate}; ${lighting}; ${part.shot}`;
+    const prompt=`Create scene ${index+1} of 3 for one coherent original Dark Fantasy / Medieval Ambient visual story. Keep the same place, subject identity, costume language, weather, palette and cinematic world across all three scenes. Story moment: ${scene}. Forest green, slate, charcoal and muted antique gold palette. Epic but quiet, melancholic, mysterious and human. Painterly realism, intricate medieval textures, believable atmospheric depth, premium cinematic frame, clear focal point. Completely original setting and character design. No modern objects, no readable text, no letters, no typography, no logo, no watermark, no border, no duplicate people, no celebrity likeness.`;
+    const hash=createHash('sha256').update(`${trackHash}:${attempt}:${index}:${scene}`).digest('hex');
+    const sceneDigest=createHash('sha256').update(hash).digest();
+    return {hash,prompt,seed:sceneDigest.readUInt32BE(0)&0x7fffffff,scene,label:part.label};
+  });
+  const hash=createHash('sha256').update(scenes.map(value=>value.hash).join(':')).digest('hex');
+  return {hash,title:title.slice(0,100),prompt:scenes[0]!.prompt,seed:scenes[0]!.seed,scene:scenes[0]!.scene,scenes};
 }
 
 export function createCloudflareImageGenerator(): ImageGenerator | null {

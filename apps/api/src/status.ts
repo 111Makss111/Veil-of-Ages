@@ -21,8 +21,11 @@ async function json(url: string, init?: RequestInit) {
   return response.json();
 }
 async function youtubeStatus(): Promise<Check> {
+  if (!process.env.YOUTUBE_CLIENT_ID || !process.env.YOUTUBE_CLIENT_SECRET) {
+    const cachedEmpty=await check('youtube',false,async()=>'',300000);
+    return { ...cachedEmpty, detail: 'Потрібно надати доступ через Google' };
+  }
   const empty: Check = { id: 'youtube', state: 'not_configured', detail: 'Потрібно надати доступ через Google', checkedAt: new Date().toISOString() };
-  if (!process.env.YOUTUBE_CLIENT_ID || !process.env.YOUTUBE_CLIENT_SECRET) return empty;
   try {
     const refresh = await getYoutubeRefreshToken();
     if (!refresh) return empty;

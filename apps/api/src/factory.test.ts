@@ -11,6 +11,7 @@ process.env.DATABASE_URL='postgresql://test:test@localhost/test';
 process.env.PUBLIC_API_URL='https://api.example.test';
 const { pool }=await import('./db.js');
 const { chooseVisualPreset, factoryMigration, reserveAsset }=await import('./factory-store.js');
+const { buildReleaseConcept }=await import('./factory-ai.js');
 const { factoryRoutes }=await import('./factory.js');
 
 test('factory browser script parses and storage fails closed without configuration',()=>{
@@ -26,18 +27,26 @@ test('factory chooses a cinematic look without repeating one hard-coded result',
   assert.equal(chooseVisualPreset('ancient-mist','ff'.repeat(32),''),'ancient-mist');
 });
 
+test('factory creates a stable three-part visual story',()=>{
+  const concept=buildReleaseConcept('ab'.repeat(32));
+  assert.equal(concept.scenes.length,3);
+  assert.deepEqual(concept.scenes.map(scene=>scene.label),['Вступ','Розвиток','Кульмінація']);
+  assert.equal(new Set(concept.scenes.map(scene=>scene.hash)).size,3);
+  assert.deepEqual(concept,buildReleaseConcept('ab'.repeat(32)));
+});
+
 test('factory: durable library, quotas, duplicates, reservation, retry, review and private upload',async()=>{
   const db=new PGlite();const originalQuery=pool!.query,originalConnect=pool!.connect;
   const q=async(sql:string,args?:unknown[])=>{const r=await db.query(sql,args);return {...r,rowCount:r.affectedRows||r.rows.length};};
   pool!.query=q as typeof originalQuery;
   let tail=Promise.resolve();pool!.connect=(async()=>{const before=tail;let release!:()=>void;tail=new Promise<void>(r=>release=r);await before;return {query:q,release};}) as typeof originalConnect;
-  const objects=new Map<string,Buffer>();let otherBytes=0,puts=0,deletes=0,failPut=false,renderFail=true,renders=0,generated=0;const renderPresets:string[]=[];
+  const objects=new Map<string,Buffer>();let otherBytes=0,puts=0,deletes=0,failPut=false,renderFail=true,renders=0,generated=0;const renderPresets:string[]=[],renderSceneCounts:number[]=[];
   const storage:ObjectStore={usage:async()=>otherBytes+[...objects.values()].reduce((n,b)=>n+b.length,0),put:async(k,b)=>{puts++;if(failPut)throw Error('secret never leak');objects.set(k,b);},get:async(k,max)=>{const b=objects.get(k);if(!b||b.length>max)throw Error('not found');return b;},delete:async k=>{deletes++;objects.delete(k);}};
   const app=Fastify();let authorized=true;
   app.decorateRequest('ownerSession',undefined);app.addHook('onRequest',async req=>{if(authorized)req.ownerSession={token_hash:'test',google_sub:'test',verified:true,enrollment_encrypted:null};});
   app.addContentTypeParser('video/mp4',{parseAs:'buffer'},(_req,b,done)=>done(null,b));
   let published=0;app.post('/youtube/upload',async req=>{published++;assert.equal((req.query as {children:string}).children,'no');return {videoId:'abcdefghijk'};});
-  await app.register(factoryRoutes,{storage,probe:async()=>120,imageGenerator:async()=>{generated++;return {data:Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),Buffer.alloc(80)]),type:'image/png'};},render:async(_image:string,_audio:string,out:string,_kind:string,_signal?:AbortSignal,_format?:'video'|'shorts',preset?:string,onProgress?:(p:{percent:number;seconds:number;duration:number})=>void)=>{renders++;if(preset)renderPresets.push(preset);onProgress?.({percent:50,seconds:60,duration:120});if(renderFail)throw Error('test render interruption');await writeFile(out,Buffer.from('0000ftypisom-fake-render-test'));}});
+  await app.register(factoryRoutes,{storage,probe:async()=>120,imageGenerator:async()=>{generated++;return {data:Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),Buffer.alloc(80)]),type:'image/png'};},render:async(images:string|string[],_audio:string,out:string,_kind:string,_signal?:AbortSignal,_format?:'video'|'shorts',preset?:string,onProgress?:(p:{percent:number;seconds:number;duration:number})=>void)=>{renders++;renderSceneCounts.push(Array.isArray(images)?images.length:1);if(preset)renderPresets.push(preset);onProgress?.({percent:50,seconds:60,duration:120});if(renderFail)throw Error('test render interruption');await writeFile(out,Buffer.from('0000ftypisom-fake-render-test'));}});
   const headers={origin:'https://api.example.test'};
   const post=(url:string,payload:Record<string,unknown>)=>app.inject({method:'POST',url,headers,payload});
   const upload=(kind:string,body:Buffer,name:string)=>app.inject({method:'POST',url:'/api/factory/assets?kind='+kind+'&vocal=instrumental',headers:{...headers,'content-type':'multipart/form-data; boundary=testboundary'},payload:Buffer.concat([Buffer.from('--testboundary\r\nContent-Disposition: form-data; name="file"; filename="'+name+'"\r\nContent-Type: application/octet-stream\r\n\r\n'),body,Buffer.from('\r\n--testboundary--\r\n')])});
@@ -60,21 +69,21 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
     otherBytes=0;
     const key=randomUUID(),start=await post('/api/factory/releases',{requestKey:key});assert.equal(start.statusCode,202,start.body);
     const id=start.json().id;assert.equal((await post('/api/factory/releases',{requestKey:key})).json().id,id);
-    await waitState(id,'failed');assert.equal(renders,1);assert.equal(generated,1);
+    await waitState(id,'failed');assert.equal(renders,1);assert.equal(generated,3);assert.deepEqual(renderSceneCounts,[3]);assert.equal((await q('SELECT * FROM factory_release_scenes WHERE release_id=$1',[id])).rows.length,3);
     const stopped=(await q('SELECT * FROM factory_releases WHERE id=$1',[id])).rows[0] as {stage:string;progress:number;error:string;started_at:Date;render_started_at:Date;processed_seconds:number;render_duration:number};
-    assert.equal(stopped.stage,'rendering');assert.equal(stopped.progress,58);assert.match(stopped.error,/FFmpeg/);assert.ok(stopped.started_at);assert.ok(stopped.render_started_at);assert.equal(stopped.processed_seconds,60);assert.equal(stopped.render_duration,120);
+    assert.equal(stopped.stage,'rendering');assert.equal(stopped.progress,60);assert.match(stopped.error,/FFmpeg/);assert.ok(stopped.started_at);assert.ok(stopped.render_started_at);assert.equal(stopped.processed_seconds,60);assert.equal(stopped.render_duration,120);
     assert.equal((await post('/api/factory/releases',{requestKey:randomUUID()})).statusCode,409); // Track remains reserved.
     renderFail=false;assert.equal((await post('/api/factory/releases/'+id+'/retry',{})).statusCode,202);
-    await waitState(id,'review');assert.equal(renders,2);assert.equal(generated,1);assert.equal(renderPresets.length,2);
-    const release=(await q('SELECT * FROM factory_releases WHERE id=$1',[id])).rows[0] as {track_id:string;output_id:string;progress:number;stage:string;recipe:{coverMode:string;prompt:string;motionIntensity:string;productionPlan:{version:number;source:string;effects:string[]}}};assert.equal(release.track_id,audio.json().id);assert.equal(release.recipe.coverMode,'ai');assert.match(release.recipe.prompt,/Dark Fantasy/);assert.equal(release.recipe.motionIntensity,'cinematic');assert.equal(release.recipe.productionPlan.version,1);assert.equal(release.recipe.productionPlan.source,'baseline-rules');assert.ok(release.recipe.productionPlan.effects.includes('camera.center-push'));assert.equal(release.progress,100);assert.equal(release.stage,'complete');
+    await waitState(id,'review');assert.equal(renders,2);assert.equal(generated,3);assert.equal(renderPresets.length,2);assert.deepEqual(renderSceneCounts,[3,3]);
+    const release=(await q('SELECT * FROM factory_releases WHERE id=$1',[id])).rows[0] as {track_id:string;output_id:string;progress:number;stage:string;recipe:{coverMode:string;prompt:string;motionIntensity:string;productionPlan:{version:number;source:string;sceneCount:number;effects:string[]}}};assert.equal(release.track_id,audio.json().id);assert.equal(release.recipe.coverMode,'ai');assert.match(release.recipe.prompt,/Dark Fantasy/);assert.equal(release.recipe.motionIntensity,'cinematic');assert.equal(release.recipe.productionPlan.version,2);assert.equal(release.recipe.productionPlan.sceneCount,3);assert.equal(release.recipe.productionPlan.source,'baseline-rules');assert.ok(release.recipe.productionPlan.effects.includes('story.three-scenes'));assert.ok(!release.recipe.productionPlan.effects.includes('camera.center-push'));assert.equal(release.progress,100);assert.equal(release.stage,'complete');
     assert.equal((await app.inject('/api/factory/assets/'+release.output_id+'/file')).statusCode,200);
     assert.equal((await post('/api/factory/assets/'+release.output_id+'/delete',{confirmation:'DELETE'})).statusCode,409);
     authorized=false;assert.equal((await app.inject('/api/factory/assets/'+release.output_id+'/file')).statusCode,401);authorized=true;
     assert.equal((await post('/api/factory/releases/'+id+'/publish',{children:'no',synthetic:'yes',rights:false})).statusCode,400);assert.equal(published,0);
     const publish=await post('/api/factory/releases/'+id+'/publish',{children:'no',synthetic:'yes',rights:true});assert.equal(publish.statusCode,200,publish.body);assert.equal(published,1);
     assert.equal((await post('/api/factory/releases/'+id+'/publish',{children:'no',synthetic:'yes',rights:true})).statusCode,409);assert.equal(published,1);
-    const removed=await post('/api/factory/releases/'+id+'/delete',{confirmation:'DELETE'});assert.equal(removed.statusCode,200,removed.body);assert.equal((await q('SELECT * FROM factory_releases WHERE id=$1',[id])).rows.length,0);assert.equal((await q("SELECT * FROM factory_assets WHERE kind='audio' AND id=$1",[audio.json().id])).rows.length,1);assert.equal(deletes,2);
-    assert.equal((await post('/api/factory/assets/'+audio.json().id+'/delete',{confirmation:'DELETE'})).statusCode,200);assert.equal(deletes,3);
+    const removed=await post('/api/factory/releases/'+id+'/delete',{confirmation:'DELETE'});assert.equal(removed.statusCode,200,removed.body);assert.equal((await q('SELECT * FROM factory_releases WHERE id=$1',[id])).rows.length,0);assert.equal((await q("SELECT * FROM factory_assets WHERE kind='audio' AND id=$1",[audio.json().id])).rows.length,1);assert.equal(deletes,4);
+    assert.equal((await post('/api/factory/assets/'+audio.json().id+'/delete',{confirmation:'DELETE'})).statusCode,200);assert.equal(deletes,5);
     failPut=true;const failed=await upload('audio',Buffer.from('ID3-another-test-audio-more-bytes'),'Other.mp3');assert.equal(failed.statusCode,503);assert.ok(!failed.body.includes('secret'));
     assert.ok((await app.inject('/api/factory/storage')).json().reserved>0);
     failPut=false;assert.equal((await upload('audio',Buffer.from('ID3-another-test-audio-more-bytes'),'Other.mp3')).statusCode,409);

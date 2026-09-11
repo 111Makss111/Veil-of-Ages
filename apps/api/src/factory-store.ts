@@ -4,7 +4,7 @@ import { requirePool } from './db.js';
 import { INPUT_LIMIT, STORAGE_LIMIT, type ObjectStore } from './factory-storage.js';
 import { MAX_OUTPUT_BYTES } from './media-render.js';
 import type { CinematicPreset } from './media-render.js';
-import { buildReleaseConcept, MAX_GENERATED_IMAGE_BYTES } from './factory-ai.js';
+import { buildReleaseConcept, GENERATED_SCENE_COUNT, MAX_GENERATED_IMAGE_BYTES } from './factory-ai.js';
 import { ACTIVE_EFFECT_IDS, motionIntensitySchema, productionPlanSchema } from './factory-effects.js';
 
 export const factoryMigration = `
@@ -42,6 +42,13 @@ ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS render_started_at TIMESTAM
 ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS processed_seconds DOUBLE PRECISION;
 ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS render_duration DOUBLE PRECISION;
 CREATE UNIQUE INDEX IF NOT EXISTS factory_one_render ON factory_releases((true)) WHERE state='rendering';
+CREATE TABLE IF NOT EXISTS factory_release_scenes (
+ release_id UUID NOT NULL REFERENCES factory_releases(id) ON DELETE CASCADE,
+ position INTEGER NOT NULL CHECK(position>=0 AND position<3),
+ asset_id UUID NOT NULL REFERENCES factory_assets(id),
+ label TEXT NOT NULL, prompt TEXT NOT NULL, seed BIGINT NOT NULL,
+ PRIMARY KEY(release_id,position)
+);
 `;
 export class FactoryError extends Error { constructor(public status: number, message: string) { super(message); } }
 export async function factoryLock<T>(fn: (db: PoolClient) => Promise<T>): Promise<T> {
@@ -83,23 +90,33 @@ export async function startRelease(storage: ObjectStore, requestKey: string, gen
       AND NOT EXISTS(SELECT 1 FROM factory_releases r WHERE r.track_id=a.id) ORDER BY created_at,id LIMIT 1`,[recipe.vocal])).rows[0];
     if (!track) throw new FactoryError(409,'Немає невикористаних треків з обраним режимом вокалу. Поповни бібліотеку або зміни режим.');
     let concept:ReturnType<typeof buildReleaseConcept>|null=null;
+    let sceneAssets:Array<{id:string;position:number;label:string;prompt:string;seed:number}>=[];
     let cover = generateImage ? null : (await db.query("SELECT id FROM factory_assets WHERE id=$1 AND kind='image' AND state='ready'",[recipe.cover_id])).rows[0];
     if(!generateImage&&!cover)throw new FactoryError(409,'Підключи Workers AI або додай резервну обкладинку.');
-    await capacity(db, storage, MAX_OUTPUT_BYTES+(generateImage?MAX_GENERATED_IMAGE_BYTES:0));
+    await capacity(db, storage, MAX_OUTPUT_BYTES+(generateImage?MAX_GENERATED_IMAGE_BYTES*GENERATED_SCENE_COUNT:0));
     const id=randomUUID(), outputId=randomUUID();
     if(generateImage){
       const used=new Set((await db.query("SELECT recipe->>'conceptHash' AS hash FROM factory_releases WHERE recipe->>'conceptHash' IS NOT NULL")).rows.map(r=>r.hash));
       for(let attempt=0;attempt<128;attempt++){const candidate=buildReleaseConcept(track.hash,attempt);if(!used.has(candidate.hash)){concept=candidate;break;}}
       if(!concept)throw new FactoryError(409,'Не вдалося підібрати нову сцену. Розширимо каталог концепцій.');
-      const coverId=randomUUID();
-      cover=(await db.query("INSERT INTO factory_assets(id,kind,hash,object_key,name,bytes,type,vocal,state,theme) VALUES($1,'image',$2,$3,$4,$5,'image/jpeg',$6,'reserved',$7) RETURNING id",[coverId,'ai:'+concept.hash,'factory/'+coverId,concept.title+'.jpg',MAX_GENERATED_IMAGE_BYTES,recipe.vocal,concept.scene])).rows[0];
+      for(const [position,scene] of concept.scenes.entries()){
+        const sceneId=randomUUID();
+        const asset=(await db.query("INSERT INTO factory_assets(id,kind,hash,object_key,name,bytes,type,vocal,state,theme) VALUES($1,'image',$2,$3,$4,$5,'image/jpeg',$6,'reserved',$7) RETURNING id",[sceneId,'ai:'+scene.hash,'factory/'+sceneId,`${concept.title} · ${scene.label}.jpg`,MAX_GENERATED_IMAGE_BYTES,recipe.vocal,scene.scene])).rows[0];
+        sceneAssets.push({id:asset.id,position,label:scene.label,prompt:scene.prompt,seed:scene.seed});
+      }
+      cover={id:sceneAssets[0]!.id};
+    }else{
+      sceneAssets=[{id:cover.id,position:0,label:'Єдина сцена',prompt:'',seed:0}];
     }
     await db.query("INSERT INTO factory_assets(id,kind,hash,object_key,name,bytes,type,vocal,state) VALUES($1,'video',$2,$3,$4,$5,'video/mp4',$6,'reserved')",[outputId,id,'factory/'+outputId,'Випуск.mp4',MAX_OUTPUT_BYTES,recipe.vocal]);
     const title=concept?.title??track.name.replace(/\.[^.]+$/,'').replace(/[<>\x00-\x1f]/g,'').slice(0,75)+' | Dark Fantasy Ambient';
     const visualPreset=chooseVisualPreset('auto',track.hash,track.theme);
     const motionIntensity=motionIntensitySchema.parse(recipe.motion_intensity||'cinematic');
-    const productionPlan=productionPlanSchema.parse({version:1,source:'baseline-rules',sceneCount:1,visualPreset,motionIntensity,effects:ACTIVE_EFFECT_IDS,approvalRequired:true});
-    const release=(await db.query("INSERT INTO factory_releases(id,request_key,track_id,cover_id,output_id,title,recipe,state,progress,stage,progress_detail,started_at) VALUES($1,$2,$3,$4,$5,$6,$7,'rendering',2,'preparing','Резервуємо місце та готуємо виробничу лінію.',NOW()) RETURNING *",[id,requestKey,track.id,cover.id,outputId,title.slice(0,100),JSON.stringify({genre:'Dark Fantasy / Medieval Ambient',vocal:recipe.vocal,revision:recipe.revision,theme:track.theme,visualPreset,motionIntensity,productionPlan,coverMode:generateImage?'ai':'manual',conceptHash:concept?.hash,prompt:concept?.prompt,seed:concept?.seed,scene:concept?.scene})])).rows[0];
+    const sceneCount=generateImage?3:1;
+    const effects=sceneCount===3?ACTIVE_EFFECT_IDS:ACTIVE_EFFECT_IDS.filter(id=>id!=='story.three-scenes'&&id!=='transition.scene-crossfades');
+    const productionPlan=productionPlanSchema.parse({version:2,source:'baseline-rules',sceneCount,visualPreset,motionIntensity,effects,approvalRequired:true});
+    const release=(await db.query("INSERT INTO factory_releases(id,request_key,track_id,cover_id,output_id,title,recipe,state,progress,stage,progress_detail,started_at) VALUES($1,$2,$3,$4,$5,$6,$7,'rendering',2,'preparing','Резервуємо місце та готуємо виробничу лінію.',NOW()) RETURNING *",[id,requestKey,track.id,cover.id,outputId,title.slice(0,100),JSON.stringify({genre:'Dark Fantasy / Medieval Ambient',vocal:recipe.vocal,revision:recipe.revision,theme:track.theme,visualPreset,motionIntensity,productionPlan,coverMode:generateImage?'ai':'manual',conceptHash:concept?.hash,prompt:concept?.prompt,seed:concept?.seed,scene:concept?.scene,scenes:concept?.scenes})])).rows[0];
+    for(const scene of sceneAssets)await db.query('INSERT INTO factory_release_scenes(release_id,position,asset_id,label,prompt,seed) VALUES($1,$2,$3,$4,$5,$6)',[id,scene.position,scene.id,scene.label,scene.prompt,scene.seed]);
     return { release, fresh: true };
   });
 }

@@ -12,7 +12,7 @@ import { createObjectStore, STORAGE_LIMIT, INPUT_LIMIT, type ObjectStore } from 
 import { FactoryError, reserveAsset, startRelease, factoryLock } from './factory-store.js';
 import { factoryPage, factoryCss, factoryScript } from './factory-ui.js';
 import { createCloudflareImageGenerator, type ImageGenerator } from './factory-ai.js';
-import { EFFECT_CATALOG, motionIntensitySchema } from './factory-effects.js';
+import { ACTIVE_EFFECT_IDS, EFFECT_CATALOG, motionIntensitySchema } from './factory-effects.js';
 
 const uuid=z.string().uuid();
 const vocal=z.enum(['instrumental','choir']);
@@ -107,7 +107,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     return factoryLock(async db=>{
       const asset=(await db.query('SELECT * FROM factory_assets WHERE id=$1 FOR UPDATE',[id])).rows[0];
       if(!asset)throw new FactoryError(404,'Матеріал уже видалено.');
-      if((await db.query('SELECT id FROM factory_releases WHERE track_id=$1 OR cover_id=$1 OR output_id=$1 LIMIT 1',[id])).rowCount)throw new FactoryError(409,'Матеріал використовується у випуску. Спочатку видали відповідний випуск.');
+      if((await db.query('SELECT id FROM factory_releases WHERE track_id=$1 OR cover_id=$1 OR output_id=$1 LIMIT 1',[id])).rowCount||(await db.query('SELECT release_id FROM factory_release_scenes WHERE asset_id=$1 LIMIT 1',[id])).rowCount)throw new FactoryError(409,'Матеріал використовується у випуску. Спочатку видали відповідний випуск.');
       if((await db.query('SELECT id FROM factory_recipe WHERE cover_id=$1',[id])).rowCount)throw new FactoryError(409,'Цю картинку обрано в рецепті. Спочатку зміни резервну обкладинку в налаштуваннях.');
       await deleteStored(s,asset);await db.query('DELETE FROM factory_assets WHERE id=$1',[id]);
       return {deleted:true,freed:Number(asset.bytes)};
@@ -120,15 +120,16 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
       if(!release)throw new FactoryError(404,'Випуск уже видалено.');
       if(['rendering','publishing','uncertain'].includes(release.state))throw new FactoryError(409,'Цей випуск зараз не можна безпечно видалити. Дочекайся завершення або перевір результат передачі.');
       const output=(await db.query('SELECT * FROM factory_assets WHERE id=$1',[release.output_id])).rows[0];
-      const cover=(await db.query('SELECT * FROM factory_assets WHERE id=$1',[release.cover_id])).rows[0];
       const generated=release.recipe?.coverMode==='ai';
-      const coverInRecipe=!!(cover&&(await db.query('SELECT id FROM factory_recipe WHERE cover_id=$1',[cover.id])).rowCount);
-      const removableCover=generated&&!coverInRecipe?cover:null;
-      if(output)await deleteStored(s,output);if(removableCover)await deleteStored(s,removableCover);
+      let scenes=generated?(await db.query('SELECT a.* FROM factory_release_scenes s JOIN factory_assets a ON a.id=s.asset_id WHERE s.release_id=$1 ORDER BY s.position',[id])).rows:[];
+      if(generated&&!scenes.length){const legacyCover=(await db.query('SELECT * FROM factory_assets WHERE id=$1',[release.cover_id])).rows[0];if(legacyCover)scenes=[legacyCover];}
+      const removableScenes=[];
+      for(const scene of scenes){const inRecipe=!!(await db.query('SELECT id FROM factory_recipe WHERE cover_id=$1',[scene.id])).rowCount;if(!inRecipe)removableScenes.push(scene);}
+      if(output)await deleteStored(s,output);for(const scene of removableScenes)await deleteStored(s,scene);
       await db.query('DELETE FROM factory_releases WHERE id=$1',[id]);
       if(output)await db.query('DELETE FROM factory_assets WHERE id=$1',[output.id]);
-      if(removableCover)await db.query('DELETE FROM factory_assets WHERE id=$1',[removableCover.id]);
-      return {deleted:true,freed:Number(output?.bytes||0)+Number(removableCover?.bytes||0),keptTrackId:release.track_id};
+      for(const scene of removableScenes)await db.query('DELETE FROM factory_assets WHERE id=$1',[scene.id]);
+      return {deleted:true,freed:Number(output?.bytes||0)+removableScenes.reduce((sum,scene)=>sum+Number(scene.bytes||0),0),keptTrackId:release.track_id};
     });
   });
   function work(release:Record<string,any>){
@@ -156,31 +157,35 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
       };
       try{
         await update('preparing',3,'Готуємо тимчасове робоче місце.',true);
-        const s=needStorage();dir=await mkdtemp(join(tmpdir(),'veil-factory-'));
+        const s=needStorage();dir=await mkdtemp(join(tmpdir(),'veil-factory-'));const workDir=dir;
         const get=async(id:string)=>{const a=(await requirePool().query('SELECT * FROM factory_assets WHERE id=$1',[id])).rows[0];if(!a)throw Error('Missing asset');return a;};
-        const track=await get(release.track_id),cover=await get(release.cover_id),output=await get(release.output_id);
-        const audio=join(dir,'audio'),image=join(dir,'image'),video=join(dir,'video.mp4');
+        const track=await get(release.track_id),output=await get(release.output_id);
+        let scenes=(await requirePool().query(`SELECT s.position,s.label,s.prompt,s.seed,a.id AS asset_id,a.object_key,a.state,a.type FROM factory_release_scenes s JOIN factory_assets a ON a.id=s.asset_id WHERE s.release_id=$1 ORDER BY s.position`,[release.id])).rows;
+        if(!scenes.length){const cover=await get(release.cover_id);scenes=[{position:0,label:'Єдина сцена',prompt:release.recipe.prompt,seed:release.recipe.seed,asset_id:cover.id,object_key:cover.object_key,state:cover.state,type:cover.type}];}
+        const audio=join(workDir,'audio'),images=scenes.map((_scene,index)=>join(workDir,`scene-${index}`)),video=join(workDir,'video.mp4');
         await update('downloading',7,'Отримуємо музику з приватного сховища R2.',true);
         await writeFile(audio,await s.get(track.object_key,UPLOAD_MAX));
-        if(cover.state==='ready'){
-          await update('downloading',14,'Отримуємо вже створену обкладинку з R2.',true);
-          await writeFile(image,await s.get(cover.object_key,8*1024*1024));
-        }
-        else{
-          if(release.recipe.coverMode!=='ai'||!imageGenerator)throw Error('Image generator unavailable');
-          await update('generating-image',12,'Workers AI створює унікальний образ випуску.',true);
-          const generated=await imageGenerator(release.recipe.prompt,release.recipe.seed,controller.signal);
-          await update('saving-cover',23,'Зберігаємо створену обкладинку в R2.',true);
-          await s.put(cover.object_key,generated.data,generated.type);await writeFile(image,generated.data);
-          await requirePool().query("UPDATE factory_assets SET state='ready',bytes=$2,type=$3 WHERE id=$1",[cover.id,generated.data.length,generated.type]);
+        for(const [index,scene] of scenes.entries()){
+          if(scene.state==='ready'){
+            await update('downloading',10+index*5,`Отримуємо образ ${index+1} із ${scenes.length} з R2.`,true);
+            await writeFile(images[index]!,await s.get(scene.object_key,8*1024*1024));
+          }else{
+            if(release.recipe.coverMode!=='ai'||!imageGenerator)throw Error('Image generator unavailable');
+            await update('generating-image',10+index*6,`Workers AI створює образ ${index+1} із ${scenes.length}: ${scene.label}.`,true);
+            const generated=await imageGenerator(scene.prompt,Number(scene.seed),controller.signal);
+            await update('saving-cover',14+index*6,`Зберігаємо образ ${index+1} із ${scenes.length} у R2.`,true);
+            await s.put(scene.object_key,generated.data,generated.type);await writeFile(images[index]!,generated.data);
+            await requirePool().query("UPDATE factory_assets SET state='ready',bytes=$2,type=$3 WHERE id=$1",[scene.asset_id,generated.data.length,generated.type]);
+          }
         }
         await requirePool().query("UPDATE factory_releases SET render_started_at=NOW(),processed_seconds=0,render_duration=NULL,updated_at=NOW() WHERE id=$1 AND state='rendering'",[release.id]);
-        await update('rendering',28,'Запускаємо cinematic-монтаж і обробку звуку.',true);
-        await (options.render??renderMedia)(image,audio,video,track.type==='audio/wav'?'wav':'mp3',controller.signal,'video',release.recipe.visualPreset,p=>{
-          const processed=Math.min(p.duration,p.seconds),overall=28+p.percent*.60;
+        await update('rendering',31,`Запускаємо монтаж V2: ${scenes.length} сцени, атмосфера і звук.`,true);
+        const renderEffects=(release.recipe.productionPlan?.effects??ACTIVE_EFFECT_IDS).filter((id:string)=>id!=='camera.center-push');
+        await (options.render??renderMedia)(images,audio,video,track.type==='audio/wav'?'wav':'mp3',controller.signal,'video',release.recipe.visualPreset,p=>{
+          const processed=Math.min(p.duration,p.seconds),overall=31+p.percent*.57;
           const clock=(seconds:number)=>Math.floor(seconds/60)+':'+String(Math.floor(seconds%60)).padStart(2,'0');
           void update('rendering',overall,'Змонтовано '+clock(processed)+' із '+clock(p.duration)+' музики.',false,{seconds:processed,duration:p.duration});
-        },release.recipe.motionIntensity||'cinematic',release.recipe.productionPlan.effects);
+        },release.recipe.motionIntensity||'cinematic',renderEffects);
         await update('verifying',91,'Перевіряємо тривалість, звук, роздільність і розмір відео.',true);
         const result=await readFile(video);if(result.length>MAX_OUTPUT_BYTES)throw Error('Output exceeds reservation');
         await update('uploading',96,'Передаємо готове відео до приватного сховища R2.',true);

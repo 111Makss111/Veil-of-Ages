@@ -31,9 +31,7 @@ test('media tool reports a safe timeout reason', async () => {
 test('cinematic presets build bounded video and audio filter graphs', () => {
   for (const preset of ['ancient-mist','ember-glow','moonlit-ruins'] as const) {
     const filters = buildCinematicFilters(1280, 720, 120, preset);
-    assert.match(filters.video, /zoompan=/);
-    assert.match(filters.video, /x='\(iw-iw\/zoom\)\/2'/);
-    assert.ok(!filters.video.includes("sin(1.5*PI*on"));
+    assert.ok(!filters.video.includes('zoompan='));
     assert.match(filters.video, /gblur=/);
     assert.match(filters.video, /vignette=/);
     assert.match(filters.video, /noise=/);
@@ -41,6 +39,13 @@ test('cinematic presets build bounded video and audio filter graphs', () => {
     assert.match(filters.audio, /afade=t=out:st=115\.000/);
     assert.ok(!filters.video.includes('NaN'));
   }
+  const legacyCamera=buildCinematicFilters(1280,720,30,'ancient-mist','calm',['camera.center-push','audio.loudness-master']);
+  assert.match(legacyCamera.video,/zoompan=/);
+  assert.match(legacyCamera.video,/x='\(iw-iw\/zoom\)\/2'/);
+  assert.ok(!legacyCamera.video.includes('sin(1.5*PI*on'));
+  const story=buildCinematicFilters(1280,720,30,'moonlit-ruins','cinematic',undefined,3);
+  assert.equal((story.video.match(/xfade=/g)||[]).length,2);
+  assert.match(story.audio,/\[3:a\]/);
   assert.notEqual(buildCinematicFilters(1280,720,30,'ancient-mist','calm').video,buildCinematicFilters(1280,720,30,'ancient-mist','expressive').video);
   const minimal=buildCinematicFilters(1280,720,30,'ancient-mist','calm',['camera.center-push','audio.loudness-master']);
   assert.match(minimal.video,/zoompan=/);
