@@ -1,0 +1,25 @@
+# Separate Blueprint: does not modify the existing factory API service.
+services:
+  - type: web
+    name: veil-of-ages-n8n
+    runtime: docker
+    plan: free
+    rootDir: infra/n8n
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz/readiness
+    envVars:
+      - key: PORT
+        value: 5678
+      - key: N8N_ENCRYPTION_KEY
+        generateValue: true
+      - key: DB_POSTGRESDB_HOST
+        sync: false
+      - key: DB_POSTGRESDB_PORT
+        value: 5432
+      - key: DB_POSTGRESDB_DATABASE
+        sync: false
+      - key: DB_POSTGRESDB_USER
+        sync: false
+      - key: DB_POSTGRESDB_PASSWORD
+        sync: false
