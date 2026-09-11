@@ -10,3 +10,4 @@ dist/
 .vercel/
 .tools/
 test-media/
+exports/

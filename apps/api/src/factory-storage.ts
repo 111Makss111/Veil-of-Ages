@@ -1,4 +1,4 @@
-import { S3Client, ListObjectsV2Command, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, ListObjectsV2Command, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 
 export const STORAGE_LIMIT = 8_000_000_000;
 export const INPUT_LIMIT = 6_000_000_000; // Keep 2 GB inside our cap available for finished videos.
@@ -6,6 +6,7 @@ export interface ObjectStore {
   usage(): Promise<number>;
   put(key: string, data: Buffer, type: string): Promise<void>;
   get(key: string, max: number): Promise<Buffer>;
+  delete(key: string): Promise<void>;
 }
 export function createObjectStore(): ObjectStore | null {
   const { R2_ACCOUNT_ID: account, R2_ACCESS_KEY_ID: accessKeyId, R2_SECRET_ACCESS_KEY: secretAccessKey, R2_BUCKET: bucket } = process.env;
@@ -37,6 +38,9 @@ export function createObjectStore(): ObjectStore | null {
         chunks.push(Buffer.from(chunk));
       }
       return Buffer.concat(chunks);
+    },
+    async delete(key) {
+      await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }), { abortSignal: AbortSignal.timeout(60000) });
     }
   };
 }

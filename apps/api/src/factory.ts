@@ -41,7 +41,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     const db=requirePool();
     const [recipe,assets,releases,counts]=await Promise.all([
       db.query('SELECT * FROM factory_recipe WHERE id=1'),
-      db.query(`SELECT a.*,r.id AS release_id,r.state AS release_state FROM factory_assets a LEFT JOIN factory_releases r ON r.track_id=a.id WHERE a.kind<>'video' ORDER BY a.created_at DESC LIMIT 200`),
+      db.query(`SELECT * FROM factory_assets ORDER BY created_at DESC LIMIT 300`),
       db.query('SELECT * FROM factory_releases ORDER BY created_at DESC LIMIT 100'),
       db.query(`SELECT vocal,COUNT(*) AS available FROM factory_assets a WHERE kind='audio' AND state='ready' AND NOT EXISTS(SELECT 1 FROM factory_releases r WHERE r.track_id=a.id) GROUP BY vocal`)
     ]);
@@ -90,8 +90,46 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
   app.get('/api/factory/assets/:id/file',{logLevel:'silent'},async(req,reply)=>{
     const id=uuid.parse((req.params as {id:string}).id);const a=(await requirePool().query("SELECT * FROM factory_assets WHERE id=$1 AND state='ready'",[id])).rows[0];
     if(!a)throw new FactoryError(404,'Файл ще не готовий.');
-    const data=await needStorage().get(a.object_key,UPLOAD_MAX);
+    const data=await needStorage().get(a.object_key,a.kind==='video'?MAX_OUTPUT_BYTES:UPLOAD_MAX);
     return reply.type(a.type).header('Content-Disposition','inline').send(data);
+  });
+  const deleteConfirmation=z.object({confirmation:z.literal('DELETE')}).strict();
+  const checkedKey=(asset:{id:string;object_key:string})=>{
+    if(asset.object_key!==`factory/${asset.id}`)throw new FactoryError(409,'Файл має невідому адресу. Видалення зупинено для безпеки.');
+    return asset.object_key;
+  };
+  const deleteStored=async(s:ObjectStore,asset:{id:string;object_key:string})=>{
+    try{await s.delete(checkedKey(asset));}
+    catch{throw new FactoryError(503,'R2 не підтвердив видалення. Нічого більше не змінено; спробуй ще раз.');}
+  };
+  app.post('/api/factory/assets/:id/delete',async(req)=>{
+    deleteConfirmation.parse(req.body);const id=uuid.parse((req.params as {id:string}).id),s=needStorage();
+    return factoryLock(async db=>{
+      const asset=(await db.query('SELECT * FROM factory_assets WHERE id=$1 FOR UPDATE',[id])).rows[0];
+      if(!asset)throw new FactoryError(404,'Матеріал уже видалено.');
+      if((await db.query('SELECT id FROM factory_releases WHERE track_id=$1 OR cover_id=$1 OR output_id=$1 LIMIT 1',[id])).rowCount)throw new FactoryError(409,'Матеріал використовується у випуску. Спочатку видали відповідний випуск.');
+      if((await db.query('SELECT id FROM factory_recipe WHERE cover_id=$1',[id])).rowCount)throw new FactoryError(409,'Цю картинку обрано в рецепті. Спочатку зміни резервну обкладинку в налаштуваннях.');
+      await deleteStored(s,asset);await db.query('DELETE FROM factory_assets WHERE id=$1',[id]);
+      return {deleted:true,freed:Number(asset.bytes)};
+    });
+  });
+  app.post('/api/factory/releases/:id/delete',async(req)=>{
+    deleteConfirmation.parse(req.body);const id=uuid.parse((req.params as {id:string}).id),s=needStorage();
+    return factoryLock(async db=>{
+      const release=(await db.query('SELECT * FROM factory_releases WHERE id=$1 FOR UPDATE',[id])).rows[0];
+      if(!release)throw new FactoryError(404,'Випуск уже видалено.');
+      if(['rendering','publishing','uncertain'].includes(release.state))throw new FactoryError(409,'Цей випуск зараз не можна безпечно видалити. Дочекайся завершення або перевір результат передачі.');
+      const output=(await db.query('SELECT * FROM factory_assets WHERE id=$1',[release.output_id])).rows[0];
+      const cover=(await db.query('SELECT * FROM factory_assets WHERE id=$1',[release.cover_id])).rows[0];
+      const generated=release.recipe?.coverMode==='ai';
+      const coverInRecipe=!!(cover&&(await db.query('SELECT id FROM factory_recipe WHERE cover_id=$1',[cover.id])).rowCount);
+      const removableCover=generated&&!coverInRecipe?cover:null;
+      if(output)await deleteStored(s,output);if(removableCover)await deleteStored(s,removableCover);
+      await db.query('DELETE FROM factory_releases WHERE id=$1',[id]);
+      if(output)await db.query('DELETE FROM factory_assets WHERE id=$1',[output.id]);
+      if(removableCover)await db.query('DELETE FROM factory_assets WHERE id=$1',[removableCover.id]);
+      return {deleted:true,freed:Number(output?.bytes||0)+Number(removableCover?.bytes||0),keptTrackId:release.track_id};
+    });
   });
   function work(release:Record<string,any>){
     const task=(async()=>{

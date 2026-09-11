@@ -31,8 +31,9 @@ export function runMediaTool(binary: string, args: string[], timeout: number, si
     signal?.addEventListener('abort', abort, { once: true });
     if (signal?.aborted) abort();
     child.stdout.on('data', chunk => {
-      const text = chunk.toString(); output += text; onStdout?.(text);
-      if (output.length > 1024 * 1024) kill('output');
+      const text = chunk.toString();
+      if (onStdout) onStdout(text);
+      else { output += text; if (output.length > 1024 * 1024) kill('output'); }
     });
     child.stderr.on('data', () => {}); // Never expose local paths or media metadata in logs.
     child.once('error', () => { reason = 'spawn'; });
@@ -54,11 +55,13 @@ export function buildCinematicFilters(width: number, height: number, duration: n
   const fadeOut = Math.min(5, Math.max(0.5, duration / 4));
   const fadeOutAt = Math.max(0, duration - fadeOut);
   const looks: Record<CinematicPreset, { saturation: number; gamma: number; red: number; green: number; blue: number; mist: number; drift: number }> = {
-    'ancient-mist': { saturation: .70, gamma: .96, red: -.025, green: .015, blue: .018, mist: .12, drift: 26 },
-    'ember-glow': { saturation: .86, gamma: .95, red: .035, green: .005, blue: -.035, mist: .065, drift: 16 },
-    'moonlit-ruins': { saturation: .62, gamma: .93, red: -.035, green: -.005, blue: .045, mist: .10, drift: 20 }
+    'ancient-mist': { saturation: .70, gamma: .96, red: -.025, green: .015, blue: .018, mist: .15, drift: 32 },
+    'ember-glow': { saturation: .86, gamma: .95, red: .035, green: .005, blue: -.035, mist: .085, drift: 22 },
+    'moonlit-ruins': { saturation: .62, gamma: .93, red: -.035, green: -.005, blue: .045, mist: .13, drift: 27 }
   };
   const look = looks[preset];
+  const frames = Math.max(24, Math.round(duration * 24));
+  const zoomStep = (0.085 / frames).toFixed(9);
   const overscanWidth = Math.ceil(width * 1.2 / 2) * 2;
   const overscanHeight = Math.ceil(height * 1.2 / 2) * 2;
   const mistWidth = Math.ceil(width * 1.1 / 2) * 2;
@@ -68,7 +71,7 @@ export function buildCinematicFilters(width: number, height: number, duration: n
   const video = [
     `[0:v]split=2[scene][mistseed]`,
     `[scene]scale=${overscanWidth}:${overscanHeight}:force_original_aspect_ratio=increase,crop=${overscanWidth}:${overscanHeight},`+
-      `zoompan=z='min(max(zoom,pzoom)+0.000045,1.10)':x='iw/2-(iw/zoom/2)+18*sin(on/190)':y='ih/2-(ih/zoom/2)+11*cos(on/240)':d=1:s=${width}x${height}:fps=24[base]`,
+      `zoompan=z='min(max(zoom,pzoom)+${zoomStep},1.10)':x='iw/2-(iw/zoom/2)+34*sin(1.5*PI*on/${frames})':y='ih/2-(ih/zoom/2)+18*cos(PI*on/${frames})':d=1:s=${width}x${height}:fps=24[base]`,
     `[base]eq=contrast=1.07:saturation=${look.saturation}:gamma=${look.gamma}:brightness='-0.032+0.006*sin(2*PI*t/7)+0.003*sin(2*PI*t/2.7)':eval=frame,`+
       `colorbalance=rs=${look.red}:gs=${look.green}:bs=${look.blue},vignette=PI/5[graded]`,
     `[mistseed]scale=${hazeWidth}:${hazeHeight}:force_original_aspect_ratio=increase,crop=${hazeWidth}:${hazeHeight},gblur=sigma=7:steps=1,`+
