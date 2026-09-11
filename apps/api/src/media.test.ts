@@ -32,6 +32,8 @@ test('cinematic presets build bounded video and audio filter graphs', () => {
   for (const preset of ['ancient-mist','ember-glow','moonlit-ruins'] as const) {
     const filters = buildCinematicFilters(1280, 720, 120, preset);
     assert.match(filters.video, /zoompan=/);
+    assert.match(filters.video, /x='\(iw-iw\/zoom\)\/2'/);
+    assert.ok(!filters.video.includes("sin(1.5*PI*on"));
     assert.match(filters.video, /gblur=/);
     assert.match(filters.video, /vignette=/);
     assert.match(filters.video, /noise=/);
@@ -39,6 +41,15 @@ test('cinematic presets build bounded video and audio filter graphs', () => {
     assert.match(filters.audio, /afade=t=out:st=115\.000/);
     assert.ok(!filters.video.includes('NaN'));
   }
+  assert.notEqual(buildCinematicFilters(1280,720,30,'ancient-mist','calm').video,buildCinematicFilters(1280,720,30,'ancient-mist','expressive').video);
+  const minimal=buildCinematicFilters(1280,720,30,'ancient-mist','calm',['camera.center-push','audio.loudness-master']);
+  assert.match(minimal.video,/zoompan=/);
+  assert.ok(!minimal.video.includes('gblur='));
+  assert.ok(!minimal.video.includes('vignette='));
+  assert.ok(!minimal.video.includes('noise='));
+  assert.ok(!minimal.video.includes('fade=t='));
+  assert.match(minimal.audio,/loudnorm=/);
+  assert.ok(!minimal.audio.includes('afade='));
 });
 
 test('media files require authentication; invalid origin is rejected', async () => {

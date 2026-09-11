@@ -5,6 +5,7 @@ import { INPUT_LIMIT, STORAGE_LIMIT, type ObjectStore } from './factory-storage.
 import { MAX_OUTPUT_BYTES } from './media-render.js';
 import type { CinematicPreset } from './media-render.js';
 import { buildReleaseConcept, MAX_GENERATED_IMAGE_BYTES } from './factory-ai.js';
+import { ACTIVE_EFFECT_IDS, motionIntensitySchema, productionPlanSchema } from './factory-effects.js';
 
 export const factoryMigration = `
 CREATE TABLE IF NOT EXISTS factory_assets (
@@ -17,9 +18,11 @@ CREATE TABLE IF NOT EXISTS factory_assets (
 );
 CREATE TABLE IF NOT EXISTS factory_recipe (
  id INTEGER PRIMARY KEY CHECK(id=1), vocal TEXT NOT NULL DEFAULT 'instrumental' CHECK(vocal IN ('instrumental','choir')),
- cover_id UUID REFERENCES factory_assets(id), visual_preset TEXT NOT NULL DEFAULT 'auto', revision INTEGER NOT NULL DEFAULT 1
+ cover_id UUID REFERENCES factory_assets(id), visual_preset TEXT NOT NULL DEFAULT 'auto',
+ motion_intensity TEXT NOT NULL DEFAULT 'cinematic' CHECK(motion_intensity IN ('calm','cinematic','expressive')), revision INTEGER NOT NULL DEFAULT 1
 );
 ALTER TABLE factory_recipe ADD COLUMN IF NOT EXISTS visual_preset TEXT NOT NULL DEFAULT 'auto';
+ALTER TABLE factory_recipe ADD COLUMN IF NOT EXISTS motion_intensity TEXT NOT NULL DEFAULT 'cinematic';
 INSERT INTO factory_recipe(id) VALUES(1) ON CONFLICT DO NOTHING;
 CREATE TABLE IF NOT EXISTS factory_releases (
  id UUID PRIMARY KEY, request_key UUID UNIQUE NOT NULL, track_id UUID NOT NULL UNIQUE REFERENCES factory_assets(id),
@@ -93,8 +96,10 @@ export async function startRelease(storage: ObjectStore, requestKey: string, gen
     }
     await db.query("INSERT INTO factory_assets(id,kind,hash,object_key,name,bytes,type,vocal,state) VALUES($1,'video',$2,$3,$4,$5,'video/mp4',$6,'reserved')",[outputId,id,'factory/'+outputId,'Випуск.mp4',MAX_OUTPUT_BYTES,recipe.vocal]);
     const title=concept?.title??track.name.replace(/\.[^.]+$/,'').replace(/[<>\x00-\x1f]/g,'').slice(0,75)+' | Dark Fantasy Ambient';
-    const visualPreset=chooseVisualPreset(recipe.visual_preset,track.hash,track.theme);
-    const release=(await db.query("INSERT INTO factory_releases(id,request_key,track_id,cover_id,output_id,title,recipe,state,progress,stage,progress_detail,started_at) VALUES($1,$2,$3,$4,$5,$6,$7,'rendering',2,'preparing','Резервуємо місце та готуємо виробничу лінію.',NOW()) RETURNING *",[id,requestKey,track.id,cover.id,outputId,title.slice(0,100),JSON.stringify({genre:'Dark Fantasy / Medieval Ambient',vocal:recipe.vocal,revision:recipe.revision,theme:track.theme,visualPreset,coverMode:generateImage?'ai':'manual',conceptHash:concept?.hash,prompt:concept?.prompt,seed:concept?.seed,scene:concept?.scene})])).rows[0];
+    const visualPreset=chooseVisualPreset('auto',track.hash,track.theme);
+    const motionIntensity=motionIntensitySchema.parse(recipe.motion_intensity||'cinematic');
+    const productionPlan=productionPlanSchema.parse({version:1,source:'baseline-rules',sceneCount:1,visualPreset,motionIntensity,effects:ACTIVE_EFFECT_IDS,approvalRequired:true});
+    const release=(await db.query("INSERT INTO factory_releases(id,request_key,track_id,cover_id,output_id,title,recipe,state,progress,stage,progress_detail,started_at) VALUES($1,$2,$3,$4,$5,$6,$7,'rendering',2,'preparing','Резервуємо місце та готуємо виробничу лінію.',NOW()) RETURNING *",[id,requestKey,track.id,cover.id,outputId,title.slice(0,100),JSON.stringify({genre:'Dark Fantasy / Medieval Ambient',vocal:recipe.vocal,revision:recipe.revision,theme:track.theme,visualPreset,motionIntensity,productionPlan,coverMode:generateImage?'ai':'manual',conceptHash:concept?.hash,prompt:concept?.prompt,seed:concept?.seed,scene:concept?.scene})])).rows[0];
     return { release, fresh: true };
   });
 }

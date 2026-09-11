@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { stat } from 'node:fs/promises';
+import { ACTIVE_EFFECT_IDS, motionProfiles, type FactoryEffectId, type MotionIntensity } from './factory-effects.js';
 
 export const MAX_DURATION = 300;
 export const MAX_OUTPUT_BYTES = 47 * 1024 * 1024;
@@ -50,7 +51,7 @@ export async function checkMediaTools(): Promise<void> {
   await runMediaTool(process.env.FFPROBE_PATH || 'ffprobe', ['-version'], 5000);
 }
 
-export function buildCinematicFilters(width: number, height: number, duration: number, preset: CinematicPreset) {
+export function buildCinematicFilters(width: number, height: number, duration: number, preset: CinematicPreset, intensity:MotionIntensity='cinematic', effects:ReadonlyArray<FactoryEffectId>=ACTIVE_EFFECT_IDS) {
   const fadeIn = Math.min(2.5, Math.max(0.25, duration / 5));
   const fadeOut = Math.min(5, Math.max(0.5, duration / 4));
   const fadeOutAt = Math.max(0, duration - fadeOut);
@@ -60,30 +61,45 @@ export function buildCinematicFilters(width: number, height: number, duration: n
     'moonlit-ruins': { saturation: .62, gamma: .93, red: -.035, green: -.005, blue: .045, mist: .13, drift: 27 }
   };
   const look = looks[preset];
+  const motion=motionProfiles[intensity];
+  const has=(effect:FactoryEffectId)=>effects.includes(effect);
   const frames = Math.max(24, Math.round(duration * 24));
-  const zoomStep = (0.085 / frames).toFixed(9);
   const overscanWidth = Math.ceil(width * 1.2 / 2) * 2;
   const overscanHeight = Math.ceil(height * 1.2 / 2) * 2;
   const mistWidth = Math.ceil(width * 1.1 / 2) * 2;
   const mistHeight = Math.ceil(height * 1.1 / 2) * 2;
   const hazeWidth = Math.ceil(width / 4 / 2) * 2;
   const hazeHeight = Math.ceil(height / 4 / 2) * 2;
-  const video = [
-    `[0:v]split=2[scene][mistseed]`,
-    `[scene]scale=${overscanWidth}:${overscanHeight}:force_original_aspect_ratio=increase,crop=${overscanWidth}:${overscanHeight},`+
-      `zoompan=z='min(max(zoom,pzoom)+${zoomStep},1.10)':x='iw/2-(iw/zoom/2)+34*sin(1.5*PI*on/${frames})':y='ih/2-(ih/zoom/2)+18*cos(PI*on/${frames})':d=1:s=${width}x${height}:fps=24[base]`,
-    `[base]eq=contrast=1.07:saturation=${look.saturation}:gamma=${look.gamma}:brightness='-0.032+0.006*sin(2*PI*t/7)+0.003*sin(2*PI*t/2.7)':eval=frame,`+
-      `colorbalance=rs=${look.red}:gs=${look.green}:bs=${look.blue},vignette=PI/5[graded]`,
-    `[mistseed]scale=${hazeWidth}:${hazeHeight}:force_original_aspect_ratio=increase,crop=${hazeWidth}:${hazeHeight},gblur=sigma=7:steps=1,`+
-      `hue=s=0,eq=brightness=.16:contrast=.48,scale=${mistWidth}:${mistHeight}:flags=bilinear,format=rgba,colorchannelmixer=aa=${look.mist}[haze]`,
-    `[graded][haze]overlay=x='-(overlay_w-main_w)/2+${look.drift}*sin(t/11)':y='-(overlay_h-main_h)/2+10*cos(t/13)':eval=frame,`+
-      `noise=alls=1.2:allf=u,fade=t=in:st=0:d=${fadeIn.toFixed(3)},fade=t=out:st=${fadeOutAt.toFixed(3)}:d=${fadeOut.toFixed(3)},format=yuv420p[vout]`
-  ].join(';');
-  const audio = `[1:a]loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,afade=t=in:st=0:d=${fadeIn.toFixed(3)},afade=t=out:st=${fadeOutAt.toFixed(3)}:d=${fadeOut.toFixed(3)}[aout]`;
-  return { video, audio };
+  const video:string[]=[];
+  video.push(has('atmosphere.moving-mist')?'[0:v]split=2[scene][mistseed]':'[0:v]null[scene]');
+  video.push(has('camera.center-push')
+    ?`[scene]scale=${overscanWidth}:${overscanHeight}:force_original_aspect_ratio=increase,crop=${overscanWidth}:${overscanHeight},zoompan=z='1+${motion.zoom.toFixed(3)}*on/${frames}':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2':d=1:s=${width}x${height}:fps=24[base]`
+    :`[scene]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},fps=24[base]`);
+  const grade:string[]=[];
+  if(has('look.dark-fantasy-grade'))grade.push(`eq=contrast=1.07:saturation=${look.saturation}:gamma=${look.gamma}:brightness=-0.032`,`colorbalance=rs=${look.red}:gs=${look.green}:bs=${look.blue}`);
+  if(has('light.global-breathing'))grade.push(`eq=brightness='${has('look.dark-fantasy-grade')?'0':-0.032}+${(0.006*motion.light).toFixed(4)}*sin(2*PI*t/7)+${(0.003*motion.light).toFixed(4)}*sin(2*PI*t/2.7)':eval=frame`);
+  if(has('framing.vignette'))grade.push(`vignette=${motion.vignette}`);
+  video.push(`[base]${grade.length?grade.join(','):'null'}[graded]`);
+  let composed='graded';
+  if(has('atmosphere.moving-mist')){
+    video.push(`[mistseed]scale=${hazeWidth}:${hazeHeight}:force_original_aspect_ratio=increase,crop=${hazeWidth}:${hazeHeight},gblur=sigma=7:steps=1,hue=s=0,eq=brightness=.16:contrast=.48,scale=${mistWidth}:${mistHeight}:flags=bilinear,format=rgba,colorchannelmixer=aa=${(look.mist*motion.mist).toFixed(4)}[haze]`);
+    video.push(`[graded][haze]overlay=x='-(overlay_w-main_w)/2+${look.drift}*sin(t/11)':y='-(overlay_h-main_h)/2+10*cos(t/13)':eval=frame[composed]`);
+    composed='composed';
+  }
+  const finish:string[]=[];
+  if(has('texture.film-grain'))finish.push(`noise=alls=${(1.2*motion.grain).toFixed(2)}:allf=u`);
+  if(has('transition.soft-fades'))finish.push(`fade=t=in:st=0:d=${fadeIn.toFixed(3)}`,`fade=t=out:st=${fadeOutAt.toFixed(3)}:d=${fadeOut.toFixed(3)}`);
+  finish.push('format=yuv420p');
+  video.push(`[${composed}]${finish.join(',')}[vout]`);
+  const audioFilters:string[]=[];
+  if(has('audio.loudness-master'))audioFilters.push('loudnorm=I=-14:TP=-1.5:LRA=11');
+  audioFilters.push('aresample=48000');
+  if(has('transition.soft-fades'))audioFilters.push(`afade=t=in:st=0:d=${fadeIn.toFixed(3)}`,`afade=t=out:st=${fadeOutAt.toFixed(3)}:d=${fadeOut.toFixed(3)}`);
+  const audio = `[1:a]${audioFilters.join(',')}[aout]`;
+  return { video:video.join(';'), audio };
 }
 
-export async function renderMedia(image: string, audio: string, output: string, audioKind: string, signal?: AbortSignal, format: 'video' | 'shorts' = 'video', preset: CinematicPreset = 'ancient-mist', onProgress?: (progress: MediaProgress) => void): Promise<void> {
+export async function renderMedia(image: string, audio: string, output: string, audioKind: string, signal?: AbortSignal, format: 'video' | 'shorts' = 'video', preset: CinematicPreset = 'ancient-mist', onProgress?: (progress: MediaProgress) => void, intensity:MotionIntensity='cinematic', effects:ReadonlyArray<FactoryEffectId>=ACTIVE_EFFECT_IDS): Promise<void> {
   const probe = process.env.FFPROBE_PATH || 'ffprobe';
   const common = ['-v', 'error', '-max_alloc', '67108864', '-protocol_whitelist', 'file,pipe'];
   const picture = JSON.parse(await runMediaTool(probe, [...common, '-f', 'image2', '-show_entries', 'stream=width,height', '-of', 'json', image], 15000, signal));
@@ -95,7 +111,7 @@ export async function renderMedia(image: string, audio: string, output: string, 
   const targetWidth = format === 'shorts' ? 720 : 1280;
   const targetHeight = format === 'shorts' ? 1280 : 720;
   const renderDuration = format === 'shorts' ? Math.min(duration, 60) : duration;
-  const filters = buildCinematicFilters(targetWidth, targetHeight, renderDuration, preset);
+  const filters = buildCinematicFilters(targetWidth, targetHeight, renderDuration, preset,intensity,effects);
   let progressBuffer='';
   const parseProgress=(chunk:string)=>{
     progressBuffer+=chunk;

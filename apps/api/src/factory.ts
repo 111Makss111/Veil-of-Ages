@@ -12,10 +12,10 @@ import { createObjectStore, STORAGE_LIMIT, INPUT_LIMIT, type ObjectStore } from 
 import { FactoryError, reserveAsset, startRelease, factoryLock } from './factory-store.js';
 import { factoryPage, factoryCss, factoryScript } from './factory-ui.js';
 import { createCloudflareImageGenerator, type ImageGenerator } from './factory-ai.js';
+import { EFFECT_CATALOG, motionIntensitySchema } from './factory-effects.js';
 
 const uuid=z.string().uuid();
 const vocal=z.enum(['instrumental','choir']);
-const visualPreset=z.enum(['auto','ancient-mist','ember-glow','moonlit-ruins']);
 const UPLOAD_MAX=25*1024*1024;
 export async function factoryRoutes(app: FastifyInstance, options: { storage?: ObjectStore; render?: typeof renderMedia; probe?: (file: string, kind: string) => Promise<number>; imageGenerator?: ImageGenerator|null } = {}) {
   const storage=options.storage ?? createObjectStore();
@@ -45,7 +45,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
       db.query('SELECT * FROM factory_releases ORDER BY created_at DESC LIMIT 100'),
       db.query(`SELECT vocal,COUNT(*) AS available FROM factory_assets a WHERE kind='audio' AND state='ready' AND NOT EXISTS(SELECT 1 FROM factory_releases r WHERE r.track_id=a.id) GROUP BY vocal`)
     ]);
-    return {configured:!!storage,aiConfigured:!!imageGenerator,recipe:recipe.rows[0],assets:assets.rows,releases:releases.rows,availableByVocal:Object.fromEntries(counts.rows.map(r=>[r.vocal,Number(r.available)])),limit:STORAGE_LIMIT,inputLimit:INPUT_LIMIT};
+    return {configured:!!storage,aiConfigured:!!imageGenerator,recipe:recipe.rows[0],effects:EFFECT_CATALOG,assets:assets.rows,releases:releases.rows,availableByVocal:Object.fromEntries(counts.rows.map(r=>[r.vocal,Number(r.available)])),limit:STORAGE_LIMIT,inputLimit:INPUT_LIMIT};
   });
   app.get('/api/factory/storage',async()=>{
     const s=needStorage();
@@ -57,9 +57,9 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     });
   });
   app.post('/api/factory/recipe',async req=>{
-    const body=z.object({vocal,visualPreset,coverId:uuid.nullable(),revision:z.number().int().positive()}).strict().parse(req.body);
+    const body=z.object({vocal,motionIntensity:motionIntensitySchema,coverId:uuid.nullable(),revision:z.number().int().positive()}).strict().parse(req.body);
     if(body.coverId&&!(await requirePool().query("SELECT id FROM factory_assets WHERE id=$1 AND kind='image' AND state='ready'",[body.coverId])).rowCount)throw new FactoryError(400,'Обкладинка ще не збережена.');
-    const result=await requirePool().query('UPDATE factory_recipe SET vocal=$1,cover_id=$2,visual_preset=$3,revision=revision+1 WHERE id=1 AND revision=$4 RETURNING *',[body.vocal,body.coverId,body.visualPreset,body.revision]);
+    const result=await requirePool().query("UPDATE factory_recipe SET vocal=$1,cover_id=$2,visual_preset='auto',motion_intensity=$3,revision=revision+1 WHERE id=1 AND revision=$4 RETURNING *",[body.vocal,body.coverId,body.motionIntensity,body.revision]);
     if(!result.rowCount)throw new FactoryError(409,'Рецепт змінився в іншій вкладці. Онови сторінку.');
     return result.rows[0];
   });
@@ -180,7 +180,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
           const processed=Math.min(p.duration,p.seconds),overall=28+p.percent*.60;
           const clock=(seconds:number)=>Math.floor(seconds/60)+':'+String(Math.floor(seconds%60)).padStart(2,'0');
           void update('rendering',overall,'Змонтовано '+clock(processed)+' із '+clock(p.duration)+' музики.',false,{seconds:processed,duration:p.duration});
-        });
+        },release.recipe.motionIntensity||'cinematic',release.recipe.productionPlan.effects);
         await update('verifying',91,'Перевіряємо тривалість, звук, роздільність і розмір відео.',true);
         const result=await readFile(video);if(result.length>MAX_OUTPUT_BYTES)throw Error('Output exceeds reservation');
         await update('uploading',96,'Передаємо готове відео до приватного сховища R2.',true);
