@@ -11,6 +11,7 @@ import { mediaKind, renderMedia, runMediaTool, checkMediaTools, MAX_OUTPUT_BYTES
 import { createObjectStore, STORAGE_LIMIT, INPUT_LIMIT, type ObjectStore } from './factory-storage.js';
 import { FactoryError, reserveAsset, startRelease, factoryLock } from './factory-store.js';
 import { factoryPage, factoryCss, factoryScript } from './factory-ui.js';
+import { factoryChannelCss } from './factory-channel-ui.js';
 import { createCloudflareImageGenerator, type ImageGenerator } from './factory-ai.js';
 import { ACTIVE_EFFECT_IDS, EFFECT_CATALOG, motionIntensitySchema } from './factory-effects.js';
 
@@ -32,7 +33,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
   await app.register(multipart,{limits:{files:1,fields:0,parts:1,fileSize:UPLOAD_MAX}});
   app.addHook('onClose',async()=>{controller.abort();await Promise.allSettled([...tasks]);});
   app.get('/factory',async(_req,reply)=>reply.type('text/html').send(factoryPage));
-  app.get('/factory/style.css',async(_req,reply)=>reply.type('text/css').send(factoryCss));
+  app.get('/factory/style.css',async(_req,reply)=>reply.type('text/css').send(factoryCss+factoryChannelCss));
   app.get('/factory/app.js',async(_req,reply)=>reply.type('application/javascript').send(factoryScript));
   app.get('/api/factory',async()=>{
     // No silent restart of expensive work. A retry explicitly keeps the same track and cover.
