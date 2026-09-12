@@ -58,8 +58,15 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
     const png=Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),Buffer.alloc(40)]),mp3=Buffer.from('ID3-this-is-an-isolated-test-audio');
     const image=await upload('image',png,'castle.png');assert.equal(image.statusCode,201,image.body);
     const audio=await upload('audio',mp3,'Castle.mp3');assert.equal(audio.statusCode,201,audio.body);
+    assert.equal(Number(((await q('SELECT COUNT(*) AS count FROM factory_containers')).rows[0] as {count:number}).count),12);
+    assert.equal(((await q('SELECT container_id FROM factory_assets WHERE id=$1',[audio.json().id])).rows[0] as {container_id:string}).container_id,'dark-fantasy');
+    const factoryState=(await app.inject('/api/factory')).json();assert.equal(factoryState.availableByChannel['veil-of-ages'].instrumental,1);
+    await q("UPDATE factory_channel_containers SET container_id='rap' WHERE channel_id='veil-of-ages'");
+    assert.equal((await post('/api/factory/releases',{requestKey:randomUUID(),channelId:'veil-of-ages'})).statusCode,409);
+    await q("UPDATE factory_channel_containers SET container_id='dark-fantasy' WHERE channel_id='veil-of-ages'");
     const duplicate=await upload('audio',mp3,'Different name.mp3');assert.equal(duplicate.json().duplicate,true);assert.equal(puts,2);
-    assert.equal((await post('/api/factory/recipe',{vocal:'instrumental',motionIntensity:'cinematic',coverId:image.json().id,revision:1})).statusCode,200);
+    assert.equal((await post('/api/factory/recipe',{vocal:'instrumental',motionIntensity:'cinematic',coverId:image.json().id,containerIds:['dark-fantasy','ambient'],revision:1})).statusCode,200);
+    assert.equal(Number(((await q("SELECT COUNT(*) AS count FROM factory_channel_containers WHERE channel_id='veil-of-ages'")).rows[0] as {count:number}).count),2);
     assert.equal((await post('/api/factory/recipe',{vocal:'choir',motionIntensity:'expressive',coverId:image.json().id,revision:1})).statusCode,409);
     otherBytes=INPUT_LIMIT;
     await assert.rejects(reserveAsset(storage,{kind:'audio',hash:'new',name:'New',bytes:10,type:'audio/mpeg',duration:120,theme:'',vocal:'instrumental'}),/Запас/);

@@ -17,6 +17,7 @@ import { ACTIVE_EFFECT_IDS, EFFECT_CATALOG, motionIntensitySchema } from './fact
 
 const uuid=z.string().uuid();
 const vocal=z.enum(['instrumental','choir']);
+const containerId=z.string().regex(/^[a-z0-9-]{2,40}$/);
 const UPLOAD_MAX=25*1024*1024;
 export async function factoryRoutes(app: FastifyInstance, options: { storage?: ObjectStore; render?: typeof renderMedia; probe?: (file: string, kind: string) => Promise<number>; imageGenerator?: ImageGenerator|null } = {}) {
   const storage=options.storage ?? createObjectStore();
@@ -40,13 +41,17 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     await requirePool().query("UPDATE factory_releases SET state='failed',stage='interrupted',error='Сервер перестав передавати прогрес. Можна повторити складання з тими самими матеріалами.',updated_at=NOW() WHERE state='rendering' AND updated_at<NOW()-INTERVAL '30 minutes'");
     await requirePool().query("UPDATE factory_releases SET state='uncertain',error='Передачу перервано. Перевір YouTube Studio перед повторними діями.',updated_at=NOW() WHERE state='publishing' AND updated_at<NOW()-INTERVAL '10 minutes'");
     const db=requirePool();
-    const [recipe,assets,releases,counts]=await Promise.all([
+    const [recipe,assets,releases,counts,channels,containers,channelContainers]=await Promise.all([
       db.query('SELECT * FROM factory_recipe WHERE id=1'),
-      db.query(`SELECT * FROM factory_assets ORDER BY created_at DESC LIMIT 300`),
+      db.query(`SELECT a.*,c.name AS container_name FROM factory_assets a LEFT JOIN factory_containers c ON c.id=a.container_id ORDER BY a.created_at DESC LIMIT 300`),
       db.query('SELECT * FROM factory_releases ORDER BY created_at DESC LIMIT 100'),
-      db.query(`SELECT vocal,COUNT(*) AS available FROM factory_assets a WHERE kind='audio' AND state='ready' AND NOT EXISTS(SELECT 1 FROM factory_releases r WHERE r.track_id=a.id) GROUP BY vocal`)
+      db.query(`SELECT cc.channel_id,a.vocal,COUNT(*) AS available FROM factory_assets a JOIN factory_channel_containers cc ON cc.container_id=a.container_id WHERE a.kind='audio' AND a.state='ready' AND NOT EXISTS(SELECT 1 FROM factory_releases r WHERE r.track_id=a.id) GROUP BY cc.channel_id,a.vocal`),
+      db.query('SELECT * FROM factory_channels WHERE active=TRUE ORDER BY created_at,id'),
+      db.query('SELECT * FROM factory_containers ORDER BY position,name'),
+      db.query('SELECT channel_id,container_id FROM factory_channel_containers ORDER BY channel_id,container_id')
     ]);
-    return {configured:!!storage,aiConfigured:!!imageGenerator,recipe:recipe.rows[0],effects:EFFECT_CATALOG,assets:assets.rows,releases:releases.rows,availableByVocal:Object.fromEntries(counts.rows.map(r=>[r.vocal,Number(r.available)])),limit:STORAGE_LIMIT,inputLimit:INPUT_LIMIT};
+    const availableByChannel:Record<string,Record<string,number>>={};for(const r of counts.rows)(availableByChannel[r.channel_id]??={})[r.vocal]=Number(r.available);
+    return {configured:!!storage,aiConfigured:!!imageGenerator,recipe:recipe.rows[0],effects:EFFECT_CATALOG,assets:assets.rows,releases:releases.rows,channels:channels.rows,containers:containers.rows,channelContainers:channelContainers.rows,availableByChannel,availableByVocal:Object.fromEntries(counts.rows.filter(r=>r.channel_id==='veil-of-ages').map(r=>[r.vocal,Number(r.available)])),limit:STORAGE_LIMIT,inputLimit:INPUT_LIMIT};
   });
   app.get('/api/factory/storage',async()=>{
     const s=needStorage();
@@ -58,17 +63,15 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     });
   });
   app.post('/api/factory/recipe',async req=>{
-    const body=z.object({vocal,motionIntensity:motionIntensitySchema,coverId:uuid.nullable(),revision:z.number().int().positive()}).strict().parse(req.body);
+    const body=z.object({vocal,motionIntensity:motionIntensitySchema,coverId:uuid.nullable(),containerIds:z.array(containerId).min(1).max(12).optional(),revision:z.number().int().positive()}).strict().parse(req.body);
     if(body.coverId&&!(await requirePool().query("SELECT id FROM factory_assets WHERE id=$1 AND kind='image' AND state='ready'",[body.coverId])).rowCount)throw new FactoryError(400,'Обкладинка ще не збережена.');
-    const result=await requirePool().query("UPDATE factory_recipe SET vocal=$1,cover_id=$2,visual_preset='auto',motion_intensity=$3,revision=revision+1 WHERE id=1 AND revision=$4 RETURNING *",[body.vocal,body.coverId,body.motionIntensity,body.revision]);
-    if(!result.rowCount)throw new FactoryError(409,'Рецепт змінився в іншій вкладці. Онови сторінку.');
-    return result.rows[0];
+    return factoryLock(async db=>{const current=(await db.query('SELECT * FROM factory_recipe WHERE id=1 FOR UPDATE')).rows[0];if(!current||current.revision!==body.revision)throw new FactoryError(409,'Рецепт змінився в іншій вкладці. Онови сторінку.');if(body.containerIds){const valid=await db.query('SELECT id FROM factory_containers WHERE id=ANY($1::text[])',[body.containerIds]);if(valid.rows.length!==new Set(body.containerIds).size)throw new FactoryError(400,'Один із жанрових контейнерів не існує.');await db.query('DELETE FROM factory_channel_containers WHERE channel_id=$1',[current.channel_id]);for(const id of new Set(body.containerIds))await db.query('INSERT INTO factory_channel_containers(channel_id,container_id) VALUES($1,$2)',[current.channel_id,id]);}return (await db.query("UPDATE factory_recipe SET vocal=$1,cover_id=$2,visual_preset='auto',motion_intensity=$3,revision=revision+1 WHERE id=1 RETURNING *",[body.vocal,body.coverId,body.motionIntensity])).rows[0];});
   });
   app.post('/api/factory/assets',{logLevel:'silent'},async(req,reply)=>{
     const s=needStorage();if(uploading)throw new FactoryError(429,'Дочекайся завершення поточного файла.');uploading=true;
     let dir:string|undefined;
     try{
-      const meta=z.object({kind:z.enum(['audio','image']),vocal:vocal.default('instrumental'),theme:z.string().trim().max(500).default('')}).parse(req.query);
+      const meta=z.object({kind:z.enum(['audio','image']),vocal:vocal.default('instrumental'),containerId:containerId.default('dark-fantasy'),theme:z.string().trim().max(500).default('')}).parse(req.query);
       const part=await req.file();if(!part)throw new FactoryError(400,'Обери файл.');
       const data=await part.toBuffer();if(part.file.truncated||data.length>UPLOAD_MAX||data.length<16)throw new FactoryError(400,'Файл має бути до 25 МіБ.');
       const kind=mediaKind(data.subarray(0,16),meta.kind==='image');
@@ -80,6 +83,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
         else {const result=JSON.parse(await runMediaTool(process.env.FFPROBE_PATH||'ffprobe',['-v','error','-max_alloc','67108864','-protocol_whitelist','file,pipe','-f',kind,'-show_entries','format=duration:stream=codec_type','-of','json',file],15000));duration=Number(result.format?.duration);if(!result.streams?.some((v:{codec_type:string})=>v.codec_type==='audio'))duration=0;}
         if(!Number.isFinite(duration)||duration!<1||duration!>300)throw new FactoryError(400,'Перший сценарій приймає треки від 1 секунди до 5 хвилин. Довгі ambient-збірки додамо окремо.');
       }
+      if(meta.kind==='audio'&&!(await requirePool().query('SELECT id FROM factory_containers WHERE id=$1',[meta.containerId])).rowCount)throw new FactoryError(400,'Обраний жанровий контейнер не існує.');
       const type=meta.kind==='audio'?(kind==='mp3'?'audio/mpeg':'audio/wav'):(kind==='png'?'image/png':'image/jpeg');
       const {asset,fresh}=await reserveAsset(s,{...meta,hash:createHash('sha256').update(data).digest('hex'),name:part.filename.replace(/[<>\x00-\x1f]/g,'').slice(0,150)||'Без назви',bytes:data.length,type,duration});
       if(!fresh){if(asset.state!=='ready')throw new FactoryError(409,'Попереднє збереження цього файла не підтверджене. Він утримує резерв місця; перевір R2 перед повтором.');return {id:asset.id,duplicate:true};}
@@ -205,9 +209,9 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     })();tasks.add(task);void task.finally(()=>tasks.delete(task));
   }
   app.post('/api/factory/releases',async(req,reply)=>{
-    const {requestKey}=z.object({requestKey:uuid}).strict().parse(req.body);
+    const {requestKey,channelId}=z.object({requestKey:uuid,channelId:containerId.default('veil-of-ages')}).strict().parse(req.body);
     const s=needStorage();if(!options.render)await checkMediaTools();
-    const {release,fresh}=await startRelease(s,requestKey,!!imageGenerator);if(fresh)work(release);
+    const {release,fresh}=await startRelease(s,requestKey,!!imageGenerator,channelId);if(fresh)work(release);
     return reply.code(fresh?202:200).send({id:release.id,state:release.state});
   });
   app.post('/api/factory/releases/:id/retry',async(req,reply)=>{

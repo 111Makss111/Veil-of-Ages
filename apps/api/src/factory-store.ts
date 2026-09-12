@@ -8,21 +8,55 @@ import { buildReleaseConcept, GENERATED_SCENE_COUNT, MAX_GENERATED_IMAGE_BYTES }
 import { ACTIVE_EFFECT_IDS, motionIntensitySchema, productionPlanSchema } from './factory-effects.js';
 
 export const factoryMigration = `
+CREATE TABLE IF NOT EXISTS factory_channels (
+ id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', active BOOLEAN NOT NULL DEFAULT TRUE,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS factory_containers (
+ id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL DEFAULT '', position INTEGER NOT NULL DEFAULT 0,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+INSERT INTO factory_channels(id,name,description) VALUES
+ ('veil-of-ages','Veil of Ages','Dark Fantasy / Medieval Ambient') ON CONFLICT DO NOTHING;
+INSERT INTO factory_containers(id,name,description,position) VALUES
+ ('dark-fantasy','Dark Fantasy / Medieval Ambient','Темна атмосферна музика для Veil of Ages',10),
+ ('techno','Techno','Електронна танцювальна музика та техно',20),
+ ('rap','Rap / Hip-Hop','Реп, хіп-хоп і сучасний урбаністичний звук',30),
+ ('ukrainian-hits','Українські хіти','Україномовна популярна музика',40),
+ ('pop','Pop','Сучасна популярна музика',50),
+ ('electronic','Electronic / EDM','Електронна музика та EDM',60),
+ ('lofi','Lo-fi','Спокійні lo-fi композиції',70),
+ ('ambient','Ambient / Meditation','Фонова та медитативна музика',80),
+ ('rock','Rock / Alternative','Рок та альтернативна музика',90),
+ ('nordic','Viking / Nordic','Північна, вікінгська й фольклорна музика',100),
+ ('pirate-folk','Pirate Folk','Піратські балади й морський фолк',110),
+ ('cinematic','Cinematic','Епічна музика для сюжетного монтажу',120)
+ON CONFLICT DO NOTHING;
+CREATE TABLE IF NOT EXISTS factory_channel_containers (
+ channel_id TEXT NOT NULL REFERENCES factory_channels(id) ON DELETE CASCADE,
+ container_id TEXT NOT NULL REFERENCES factory_containers(id) ON DELETE RESTRICT,
+ PRIMARY KEY(channel_id,container_id)
+);
+INSERT INTO factory_channel_containers(channel_id,container_id) VALUES('veil-of-ages','dark-fantasy') ON CONFLICT DO NOTHING;
 CREATE TABLE IF NOT EXISTS factory_assets (
  id UUID PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('audio','image','video')),
  hash TEXT NOT NULL, object_key TEXT NOT NULL UNIQUE, name TEXT NOT NULL, bytes BIGINT NOT NULL CHECK(bytes>0),
  type TEXT NOT NULL, duration DOUBLE PRECISION, theme TEXT NOT NULL DEFAULT '',
- vocal TEXT NOT NULL CHECK(vocal IN ('instrumental','choir')),
+ vocal TEXT NOT NULL CHECK(vocal IN ('instrumental','choir')), container_id TEXT REFERENCES factory_containers(id),
  state TEXT NOT NULL CHECK(state IN ('reserved','ready','uncertain')),
  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(kind,hash)
 );
+ALTER TABLE factory_assets ADD COLUMN IF NOT EXISTS container_id TEXT REFERENCES factory_containers(id);
+UPDATE factory_assets SET container_id='dark-fantasy' WHERE kind='audio' AND container_id IS NULL;
 CREATE TABLE IF NOT EXISTS factory_recipe (
  id INTEGER PRIMARY KEY CHECK(id=1), vocal TEXT NOT NULL DEFAULT 'instrumental' CHECK(vocal IN ('instrumental','choir')),
  cover_id UUID REFERENCES factory_assets(id), visual_preset TEXT NOT NULL DEFAULT 'auto',
- motion_intensity TEXT NOT NULL DEFAULT 'cinematic' CHECK(motion_intensity IN ('calm','cinematic','expressive')), revision INTEGER NOT NULL DEFAULT 1
+ motion_intensity TEXT NOT NULL DEFAULT 'cinematic' CHECK(motion_intensity IN ('calm','cinematic','expressive')),
+ channel_id TEXT NOT NULL DEFAULT 'veil-of-ages' REFERENCES factory_channels(id), revision INTEGER NOT NULL DEFAULT 1
 );
 ALTER TABLE factory_recipe ADD COLUMN IF NOT EXISTS visual_preset TEXT NOT NULL DEFAULT 'auto';
 ALTER TABLE factory_recipe ADD COLUMN IF NOT EXISTS motion_intensity TEXT NOT NULL DEFAULT 'cinematic';
+ALTER TABLE factory_recipe ADD COLUMN IF NOT EXISTS channel_id TEXT NOT NULL DEFAULT 'veil-of-ages' REFERENCES factory_channels(id);
 INSERT INTO factory_recipe(id) VALUES(1) ON CONFLICT DO NOTHING;
 CREATE TABLE IF NOT EXISTS factory_releases (
  id UUID PRIMARY KEY, request_key UUID UNIQUE NOT NULL, track_id UUID NOT NULL UNIQUE REFERENCES factory_assets(id),
@@ -62,14 +96,14 @@ export async function capacity(db: Pick<PoolClient,'query'>, storage: ObjectStor
   if (actual + pending + bytes > (input ? INPUT_LIMIT : STORAGE_LIMIT)) throw new FactoryError(409, input ? 'Запас для нових матеріалів вичерпано. Залишаємо 2 ГБ для результатів. Нічого автоматично не видаляємо.' : 'Досягнуто ліміт фабрики 8 ГБ. Звільнення місця потребує твого рішення.');
   return { actual, pending };
 }
-export async function reserveAsset(storage: ObjectStore, data: { kind: 'audio'|'image'; hash: string; name: string; bytes: number; type: string; duration: number|null; theme: string; vocal: string }) {
+export async function reserveAsset(storage: ObjectStore, data: { kind: 'audio'|'image'; hash: string; name: string; bytes: number; type: string; duration: number|null; theme: string; vocal: string; containerId?: string|null }) {
   return factoryLock(async db => {
     const existing = (await db.query('SELECT * FROM factory_assets WHERE kind=$1 AND hash=$2',[data.kind,data.hash])).rows[0];
     if (existing) return { asset: existing, fresh: false };
     await capacity(db, storage, data.bytes, true);
     const id = randomUUID();
-    const asset = (await db.query(`INSERT INTO factory_assets(id,kind,hash,object_key,name,bytes,type,duration,theme,vocal,state)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'reserved') RETURNING *`,[id,data.kind,data.hash,'factory/'+id,data.name,data.bytes,data.type,data.duration,data.theme,data.vocal])).rows[0];
+    const asset = (await db.query(`INSERT INTO factory_assets(id,kind,hash,object_key,name,bytes,type,duration,theme,vocal,container_id,state)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'reserved') RETURNING *`,[id,data.kind,data.hash,'factory/'+id,data.name,data.bytes,data.type,data.duration,data.theme,data.vocal,data.kind==='audio'?(data.containerId||'dark-fantasy'):null])).rows[0];
     return { asset, fresh: true };
   });
 }
@@ -80,15 +114,19 @@ export function chooseVisualPreset(value: string, trackHash: string, theme = '')
   if (/moon|night|ruin|ice|winter|ніч|місяц|руїн|зим/.test(text)) return 'moonlit-ruins';
   return parseInt(trackHash.slice(0, 2), 16) % 3 === 0 ? 'ember-glow' : parseInt(trackHash.slice(0, 2), 16) % 3 === 1 ? 'moonlit-ruins' : 'ancient-mist';
 }
-export async function startRelease(storage: ObjectStore, requestKey: string, generateImage = false) {
+export async function startRelease(storage: ObjectStore, requestKey: string, generateImage = false, channelId = 'veil-of-ages') {
   return factoryLock(async db => {
     const existing = (await db.query('SELECT * FROM factory_releases WHERE request_key=$1',[requestKey])).rows[0];
     if (existing) return { release: existing, fresh: false };
     if ((await db.query("SELECT id FROM factory_releases WHERE state='rendering'")).rowCount) throw new FactoryError(409,'Лінія вже збирає випуск. Дочекайся завершення.');
-    const recipe = (await db.query('SELECT * FROM factory_recipe WHERE id=1')).rows[0];
-    const track = (await db.query(`SELECT a.* FROM factory_assets a WHERE kind='audio' AND state='ready' AND vocal=$1
-      AND NOT EXISTS(SELECT 1 FROM factory_releases r WHERE r.track_id=a.id) ORDER BY created_at,id LIMIT 1`,[recipe.vocal])).rows[0];
-    if (!track) throw new FactoryError(409,'Немає невикористаних треків з обраним режимом вокалу. Поповни бібліотеку або зміни режим.');
+    const recipe = (await db.query('SELECT * FROM factory_recipe WHERE id=1 AND channel_id=$1',[channelId])).rows[0];
+    if (!recipe) throw new FactoryError(409,'Обраний канал ще не має власної виробничої лінії.');
+    const track = (await db.query(`SELECT a.*,c.name AS container_name FROM factory_assets a
+      JOIN factory_channel_containers cc ON cc.container_id=a.container_id AND cc.channel_id=$2
+      JOIN factory_containers c ON c.id=a.container_id
+      WHERE a.kind='audio' AND a.state='ready' AND a.vocal=$1
+      AND NOT EXISTS(SELECT 1 FROM factory_releases r WHERE r.track_id=a.id) ORDER BY a.created_at,a.id LIMIT 1`,[recipe.vocal,recipe.channel_id])).rows[0];
+    if (!track) throw new FactoryError(409,'У дозволених жанрових контейнерах цього каналу немає сумісних невикористаних треків.');
     let concept:ReturnType<typeof buildReleaseConcept>|null=null;
     let sceneAssets:Array<{id:string;position:number;label:string;prompt:string;seed:number}>=[];
     let cover = generateImage ? null : (await db.query("SELECT id FROM factory_assets WHERE id=$1 AND kind='image' AND state='ready'",[recipe.cover_id])).rows[0];
@@ -115,7 +153,7 @@ export async function startRelease(storage: ObjectStore, requestKey: string, gen
     const sceneCount=generateImage?3:1;
     const effects=sceneCount===3?ACTIVE_EFFECT_IDS:ACTIVE_EFFECT_IDS.filter(id=>id!=='story.three-scenes'&&id!=='transition.scene-crossfades');
     const productionPlan=productionPlanSchema.parse({version:2,source:'baseline-rules',sceneCount,visualPreset,motionIntensity,effects,approvalRequired:true});
-    const release=(await db.query("INSERT INTO factory_releases(id,request_key,track_id,cover_id,output_id,title,recipe,state,progress,stage,progress_detail,started_at) VALUES($1,$2,$3,$4,$5,$6,$7,'rendering',2,'preparing','Резервуємо місце та готуємо виробничу лінію.',NOW()) RETURNING *",[id,requestKey,track.id,cover.id,outputId,title.slice(0,100),JSON.stringify({genre:'Dark Fantasy / Medieval Ambient',vocal:recipe.vocal,revision:recipe.revision,theme:track.theme,visualPreset,motionIntensity,productionPlan,coverMode:generateImage?'ai':'manual',conceptHash:concept?.hash,prompt:concept?.prompt,seed:concept?.seed,scene:concept?.scene,scenes:concept?.scenes})])).rows[0];
+    const release=(await db.query("INSERT INTO factory_releases(id,request_key,track_id,cover_id,output_id,title,recipe,state,progress,stage,progress_detail,started_at) VALUES($1,$2,$3,$4,$5,$6,$7,'rendering',2,'preparing','Резервуємо місце та готуємо виробничу лінію.',NOW()) RETURNING *",[id,requestKey,track.id,cover.id,outputId,title.slice(0,100),JSON.stringify({channelId:recipe.channel_id,containerId:track.container_id,genre:track.container_name,vocal:recipe.vocal,revision:recipe.revision,theme:track.theme,visualPreset,motionIntensity,productionPlan,coverMode:generateImage?'ai':'manual',conceptHash:concept?.hash,prompt:concept?.prompt,seed:concept?.seed,scene:concept?.scene,scenes:concept?.scenes})])).rows[0];
     for(const scene of sceneAssets)await db.query('INSERT INTO factory_release_scenes(release_id,position,asset_id,label,prompt,seed) VALUES($1,$2,$3,$4,$5,$6)',[id,scene.position,scene.id,scene.label,scene.prompt,scene.seed]);
     return { release, fresh: true };
   });
