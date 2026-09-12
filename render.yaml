@@ -31,3 +31,5 @@ services:
         sync: false
       - key: CLOUDFLARE_AI_TOKEN
         sync: false
+      - key: SONG_TEXT_MODEL
+        value: "@cf/meta/llama-3.3-70b-instruct-fp8-fast"

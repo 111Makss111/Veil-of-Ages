@@ -9,7 +9,8 @@ import { songsScript } from './songs-ui.js';
 
 process.env.DATABASE_URL = 'postgresql://test:test@localhost/test';
 process.env.PUBLIC_API_URL = 'https://api.example.test';
-process.env.OPENAI_API_KEY = 'test-only-do-not-use';
+process.env.R2_ACCOUNT_ID = '1234567890abcdef1234567890abcdef';
+process.env.CLOUDFLARE_AI_TOKEN = 'test-only-cloudflare-token-do-not-use';
 process.env.SONG_DAILY_LIMIT = '10';
 const { pool } = await import('./db.js');
 const { songsMigration, seedSongs, startRun, finishRun, decideVersion } = await import('./songs-store.js');
@@ -99,19 +100,19 @@ test('durable projects: snapshot, idempotency, duplicates, approval, limits and 
     const read=await app.inject('/api/songs/projects/'+projectId);
     assert.equal(read.statusCode,200,read.body);
     assert.ok(read.json().runs.some((r:{id:string;state:string})=>r.id===interrupted.run.id&&r.state==='uncertain'));
-    const providerBody={status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({...song,title:'New distinct title',lyrics:song.lyrics.replaceAll('the','a')})}]}],usage:{input_tokens:150,output_tokens:300}};
+    const providerBody={success:true,result:{response:{...song,title:'New distinct title',lyrics:song.lyrics.replaceAll('the','a')},usage:{prompt_tokens:150,completion_tokens:300}}};
     let calls=0,releaseProvider!:()=>void;
     const gate=new Promise<void>(r=>releaseProvider=r);
-    globalThis.fetch=async(url,options)=>{calls++;assert.equal(url,'https://api.openai.com/v1/responses');assert.equal(JSON.parse(String(options?.body)).store,false);await gate;return new Response(JSON.stringify(providerBody),{status:200});};
+    globalThis.fetch=async(url,options)=>{calls++;assert.equal(url,'https://api.cloudflare.com/client/v4/accounts/1234567890abcdef1234567890abcdef/ai/run/@cf/meta/llama-3.3-70b-instruct-fp8-fast');const request=JSON.parse(String(options?.body));assert.equal(request.messages[0].role,'system');assert.equal(request.messages[1].role,'user');assert.equal(request.response_format.type,'json_schema');assert.equal(request.response_format.json_schema.additionalProperties,false);await gate;return new Response(JSON.stringify(providerBody),{status:200});};
     const key=randomUUID();const generate=()=>app.inject({method:'POST',url:'/api/songs/projects/'+projectId+'/generate',headers,payload:{requestKey:key}});
     const started=await generate();assert.equal(started.statusCode,202,started.body);
     assert.equal((await generate()).json().reused,true);assert.equal(calls,1);releaseProvider();
     await app.close();
     const finished=await db.query<{state:string}>('SELECT state FROM song_runs WHERE request_key=$1',[key]);assert.equal(finished.rows[0]!.state,'complete');
-    delete process.env.OPENAI_API_KEY;
-    await assert.rejects(generateSong('prompt',new AbortController().signal),/OPENAI_API_KEY/);
-    process.env.OPENAI_API_KEY='test-only-do-not-use';
+    delete process.env.CLOUDFLARE_AI_TOKEN;
+    await assert.rejects(generateSong('prompt',new AbortController().signal),/CLOUDFLARE_AI_TOKEN/);
+    process.env.CLOUDFLARE_AI_TOKEN='test-only-cloudflare-token-do-not-use';
     globalThis.fetch=async()=>new Response(JSON.stringify({error:'secret-token-must-not-leak'}),{status:401});
-    await assert.rejects(generateSong('prompt',new AbortController().signal),e=>e instanceof Error&&!e.message.includes('secret-token')&&e.message.includes('Ключ'));
+    await assert.rejects(generateSong('prompt',new AbortController().signal),e=>e instanceof Error&&!e.message.includes('secret-token')&&e.message.includes('Cloudflare'));
   } finally { globalThis.fetch=originalFetch;await app.close();pool!.query=query;pool!.connect=connect;await db.close();await pool!.end(); }
 });

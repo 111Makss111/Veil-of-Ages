@@ -76,7 +76,7 @@ export async function songsRoutes(app: FastifyInstance) {
     const { id } = idSchema.parse(request.params);
     const { requestKey } = z.object({ requestKey: z.uuid() }).strict().parse(request.body);
     const config = generatorConfig();
-    if (!config.configured) throw new SongError(503, 'Для генерації додайте OPENAI_API_KEY у Render. Проєкт і стиль уже можна зберегти.');
+    if (!config.configured) throw new SongError(503, 'Для генерації потрібні CLOUDFLARE_AI_TOKEN та R2_ACCOUNT_ID у Render. Проєкт і стиль уже можна зберегти.');
     const { run, fresh } = await startRun(id, requestKey, config.model, dailyLimit());
     if (fresh) {
       const task = (async () => {
@@ -85,7 +85,7 @@ export async function songsRoutes(app: FastifyInstance) {
           await finishRun(run.id, result.song, result.inputTokens, result.outputTokens);
         } catch (error) {
           // Raw provider responses and database errors are never sent to the browser.
-          const message = error instanceof Error && /^(Додайте|Ключ|Генератор|Генерацію)/.test(error.message) ? error.message : 'Результат не підтверджено. Запит міг бути оплачений; автоматичного повтору немає.';
+          const message = error instanceof Error && /^(Додайте|Cloudflare|Workers AI|Генератор|Генерацію)/.test(error.message) ? error.message : 'Результат не підтверджено. Запит міг використати ліміт; автоматичного повтору немає.';
           await requirePool().query("UPDATE song_runs SET state='uncertain',error=$2,finished_at=NOW() WHERE id=$1 AND state='running'", [run.id, message]).catch(() => {});
         }
       })();
