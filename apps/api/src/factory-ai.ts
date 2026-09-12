@@ -7,11 +7,11 @@ export type SceneConcept = { hash:string; prompt:string; seed:number; scene:stri
 export type ReleaseConcept = { hash: string; title: string; prompt: string; seed: number; scene: string; scenes:SceneConcept[] };
 export type ImageGenerator = (prompt: string, seed: number, signal?: AbortSignal) => Promise<{ data: Buffer; type: 'image/jpeg'|'image/png' }>;
 
-const places = ['a drowned abbey','a ruined mountain citadel','an ancient forest chapel','a forgotten royal library','a black-stone monastery','a silent village beneath a cliff','a crumbling bridge over an endless gorge','a lonely keep beside a frozen lake'];
-const subjects = ['a solitary hooded traveller','an abandoned throne','a weathered knight without heraldry','a mysterious original sorceress','a procession of distant lanterns','a spectral stag','an empty boat at the shore','a colossal ancient bell'];
-const weather = ['slow rolling mist','fine rain crossing the frame','silent snowfall','wind carrying pale ash','low storm clouds','cold haze after rain','drifting smoke from unseen fires','moonlit fog'];
-const light = ['muted moonlight and faint emerald fire','dim candlelight against deep green shadows','a cold blue dawn with muted gold reflections','distant lightning behind slate clouds','soft firelight reflected on wet stone','a narrow beam of pale sunlight through clouds'];
-const compositions = ['wide cinematic establishing shot','low-angle cinematic composition','layered landscape with strong foreground silhouettes','symmetrical gothic composition with deep perspective','distant panoramic view with atmospheric depth','intimate medium-wide scene framed by ruined arches'];
+const places = ['a timber longhouse above a winter fjord','a mountain pass overlooking the northern sea','a black-sand shore beside a beached longship','a firelit oath circle beneath ancient pines','a cliff village facing an approaching storm','a frozen harbor at blue dawn','a high valley marked by weathered standing stones','a longship crossing a narrow misty fjord'];
+const subjects = ['two sworn brothers preparing to part','a weathered skald holding a carved lyre','a returning voyager facing the lights of home','an original shieldmaiden waiting beside the fire','a small crew raising their oars in silence','a lone mountain messenger carrying a broken banner','a father and grown son meeting after many winters','two original singers answering one another across the hall'];
+const weather = ['slow rolling sea mist','fine rain crossing the frame','silent northern snowfall','wind carrying sparks from the oath fire','low storm clouds over the fjord','cold haze after rain','drifting woodsmoke from the longhouse','moonlit fog beneath the mountains'];
+const light = ['muted moonlight and warm oath-fire','deep amber firelight against forest-green shadows','a cold blue dawn with muted gold reflections','distant lightning behind slate mountains','soft firelight reflected on wet timber','a narrow beam of pale sunlight through storm clouds'];
+const compositions = ['wide cinematic establishing shot','low-angle heroic but human composition','layered landscape with strong foreground silhouettes','symmetrical longhouse composition with deep perspective','distant panoramic view with atmospheric depth','intimate medium-wide scene framed by timber posts'];
 
 const pick = <T>(items: T[], byte: number):T => items[byte % items.length]!;
 export function buildReleaseConcept(trackHash: string, attempt = 0): ReleaseConcept {
@@ -19,7 +19,7 @@ export function buildReleaseConcept(trackHash: string, attempt = 0): ReleaseConc
   const byte=(index:number)=>digest[index]??0;
   const place=pick(places,byte(0)),subject=pick(subjects,byte(1)),climate=pick(weather,byte(2)),lighting=pick(light,byte(3)),composition=pick(compositions,byte(4));
   const placeTitle=place.replace(/^(a|an|the) /,'').split(' ').map(v=>v.charAt(0).toUpperCase()+v.slice(1)).join(' ');
-  const titlePrefixes=['Echoes of','Beneath','Beyond','The Silence of','Dreams Beneath','Lament for'];
+  const titlePrefixes=['Oath of','When We Cross','Voices Above','The Road Beyond','Under the','Call of'];
   const title=pick(titlePrefixes,byte(5))+' '+placeTitle;
   const story=[
     {label:'Вступ',shot:'wide establishing view that reveals the place before the story begins',moment:`${subject} appears small and distant`},
@@ -28,7 +28,7 @@ export function buildReleaseConcept(trackHash: string, attempt = 0): ReleaseConc
   ];
   const scenes=story.map((part,index)=>{
     const scene=`${part.label}: ${place}; ${part.moment}; ${climate}; ${lighting}; ${part.shot}`;
-    const prompt=`Create scene ${index+1} of 3 for one coherent original Dark Fantasy / Medieval Ambient visual story. Keep the same place, subject identity, costume language, weather, palette and cinematic world across all three scenes. Story moment: ${scene}. Forest green, slate, charcoal and muted antique gold palette. Epic but quiet, melancholic, mysterious and human. Painterly realism, intricate medieval textures, believable atmospheric depth, premium cinematic frame, clear focal point. Completely original setting and character design. No modern objects, no readable text, no letters, no typography, no logo, no watermark, no border, no duplicate people, no celebrity likeness.`;
+    const prompt=`Create scene ${index+1} of 3 for one coherent original Veil of Ages Viking song visual story. Keep the same place, subject identity, historically inspired costume language, weather, forest-green, slate, charcoal and muted-gold palette across all three scenes. Story moment: ${scene}. Epic Nordic cinematic realism, but human and emotionally specific rather than a generic battle poster. Authentic timber, wool, leather, iron and weathered wood textures, believable atmospheric depth, premium 16:9 cinematic frame and one clear focal point. Completely original setting and character design. No fantasy armor exaggeration, no modern objects, no readable text, no letters, no typography, no logo, no watermark, no border, no duplicate people, no celebrity likeness.`;
     const hash=createHash('sha256').update(`${trackHash}:${attempt}:${index}:${scene}`).digest('hex');
     const sceneDigest=createHash('sha256').update(hash).digest();
     return {hash,prompt,seed:sceneDigest.readUInt32BE(0)&0x7fffffff,scene,label:part.label};

@@ -71,7 +71,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     const s=needStorage();if(uploading)throw new FactoryError(429,'Дочекайся завершення поточного файла.');uploading=true;
     let dir:string|undefined;
     try{
-      const meta=z.object({kind:z.enum(['audio','image']),vocal:vocal.default('instrumental'),containerId:containerId.default('dark-fantasy'),theme:z.string().trim().max(500).default('')}).parse(req.query);
+      const meta=z.object({kind:z.enum(['audio','image']),vocal:vocal.default('instrumental'),containerId:containerId.default('viking-anthem'),theme:z.string().trim().max(500).default('')}).parse(req.query);
       const part=await req.file();if(!part)throw new FactoryError(400,'Обери файл.');
       const data=await part.toBuffer();if(part.file.truncated||data.length>UPLOAD_MAX||data.length<16)throw new FactoryError(400,'Файл має бути до 25 МіБ.');
       const kind=mediaKind(data.subarray(0,16),meta.kind==='image');

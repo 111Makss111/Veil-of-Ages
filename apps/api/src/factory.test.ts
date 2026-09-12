@@ -58,14 +58,14 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
     const png=Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),Buffer.alloc(40)]),mp3=Buffer.from('ID3-this-is-an-isolated-test-audio');
     const image=await upload('image',png,'castle.png');assert.equal(image.statusCode,201,image.body);
     const audio=await upload('audio',mp3,'Castle.mp3');assert.equal(audio.statusCode,201,audio.body);
-    assert.equal(Number(((await q('SELECT COUNT(*) AS count FROM factory_containers')).rows[0] as {count:number}).count),12);
-    assert.equal(((await q('SELECT container_id FROM factory_assets WHERE id=$1',[audio.json().id])).rows[0] as {container_id:string}).container_id,'dark-fantasy');
+    assert.equal(Number(((await q('SELECT COUNT(*) AS count FROM factory_containers')).rows[0] as {count:number}).count),14);
+    assert.equal(((await q('SELECT container_id FROM factory_assets WHERE id=$1',[audio.json().id])).rows[0] as {container_id:string}).container_id,'viking-anthem');
     const factoryState=(await app.inject('/api/factory')).json();assert.equal(factoryState.availableByChannel['veil-of-ages'].instrumental,1);
-    await q("UPDATE factory_channel_containers SET container_id='rap' WHERE channel_id='veil-of-ages'");
+    await q("DELETE FROM factory_channel_containers WHERE channel_id='veil-of-ages'");await q("INSERT INTO factory_channel_containers(channel_id,container_id) VALUES('veil-of-ages','rap')");
     assert.equal((await post('/api/factory/releases',{requestKey:randomUUID(),channelId:'veil-of-ages'})).statusCode,409);
-    await q("UPDATE factory_channel_containers SET container_id='dark-fantasy' WHERE channel_id='veil-of-ages'");
+    await q("DELETE FROM factory_channel_containers WHERE channel_id='veil-of-ages'");await q("INSERT INTO factory_channel_containers(channel_id,container_id) VALUES('veil-of-ages','viking-anthem'),('veil-of-ages','viking-rap-duet')");
     const duplicate=await upload('audio',mp3,'Different name.mp3');assert.equal(duplicate.json().duplicate,true);assert.equal(puts,2);
-    assert.equal((await post('/api/factory/recipe',{vocal:'instrumental',motionIntensity:'cinematic',coverId:image.json().id,containerIds:['dark-fantasy','ambient'],revision:1})).statusCode,200);
+    assert.equal((await post('/api/factory/recipe',{vocal:'instrumental',motionIntensity:'cinematic',coverId:image.json().id,containerIds:['viking-anthem','viking-rap-duet'],revision:2})).statusCode,200);
     assert.equal(Number(((await q("SELECT COUNT(*) AS count FROM factory_channel_containers WHERE channel_id='veil-of-ages'")).rows[0] as {count:number}).count),2);
     assert.equal((await post('/api/factory/recipe',{vocal:'choir',motionIntensity:'expressive',coverId:image.json().id,revision:1})).statusCode,409);
     otherBytes=INPUT_LIMIT;
@@ -82,7 +82,7 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
     assert.equal((await post('/api/factory/releases',{requestKey:randomUUID()})).statusCode,409); // Track remains reserved.
     renderFail=false;assert.equal((await post('/api/factory/releases/'+id+'/retry',{})).statusCode,202);
     await waitState(id,'review');assert.equal(renders,2);assert.equal(generated,3);assert.equal(renderPresets.length,2);assert.deepEqual(renderSceneCounts,[3,3]);
-    const release=(await q('SELECT * FROM factory_releases WHERE id=$1',[id])).rows[0] as {track_id:string;output_id:string;progress:number;stage:string;recipe:{coverMode:string;prompt:string;motionIntensity:string;productionPlan:{version:number;source:string;sceneCount:number;effects:string[]}}};assert.equal(release.track_id,audio.json().id);assert.equal(release.recipe.coverMode,'ai');assert.match(release.recipe.prompt,/Dark Fantasy/);assert.equal(release.recipe.motionIntensity,'cinematic');assert.equal(release.recipe.productionPlan.version,2);assert.equal(release.recipe.productionPlan.sceneCount,3);assert.equal(release.recipe.productionPlan.source,'baseline-rules');assert.ok(release.recipe.productionPlan.effects.includes('story.three-scenes'));assert.ok(!release.recipe.productionPlan.effects.includes('camera.center-push'));assert.equal(release.progress,100);assert.equal(release.stage,'complete');
+    const release=(await q('SELECT * FROM factory_releases WHERE id=$1',[id])).rows[0] as {track_id:string;output_id:string;progress:number;stage:string;recipe:{coverMode:string;prompt:string;motionIntensity:string;productionPlan:{version:number;source:string;sceneCount:number;effects:string[]}}};assert.equal(release.track_id,audio.json().id);assert.equal(release.recipe.coverMode,'ai');assert.match(release.recipe.prompt,/Viking/);assert.equal(release.recipe.motionIntensity,'cinematic');assert.equal(release.recipe.productionPlan.version,2);assert.equal(release.recipe.productionPlan.sceneCount,3);assert.equal(release.recipe.productionPlan.source,'baseline-rules');assert.ok(release.recipe.productionPlan.effects.includes('story.three-scenes'));assert.ok(!release.recipe.productionPlan.effects.includes('camera.center-push'));assert.equal(release.progress,100);assert.equal(release.stage,'complete');
     assert.equal((await app.inject('/api/factory/assets/'+release.output_id+'/file')).statusCode,200);
     assert.equal((await post('/api/factory/assets/'+release.output_id+'/delete',{confirmation:'DELETE'})).statusCode,409);
     authorized=false;assert.equal((await app.inject('/api/factory/assets/'+release.output_id+'/file')).statusCode,401);authorized=true;

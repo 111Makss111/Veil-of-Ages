@@ -163,6 +163,18 @@ export const factoryChannelCss = `
   margin: 16px 0 4px;
 }
 
+.creative-link {
+  margin: 18px 0;
+  padding: 16px;
+  border: 1px solid #bde99830;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #bfe99610, transparent);
+}
+
+.creative-link strong { color: #dff1d2; }
+.creative-link p { margin: 5px 0 13px; font-size: 12px; }
+.creative-link .button { text-decoration: none; }
+
 @media (max-width: 650px) {
   .channel-dialog-shell { padding: 14px; }
   .container-choices { grid-template-columns: 1fr; }

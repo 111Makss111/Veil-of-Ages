@@ -14,6 +14,7 @@ CREATE INDEX IF NOT EXISTS song_versions_project ON song_versions(project_id,cre
 export class SongError extends Error { constructor(public status: number, message: string) { super(message); } }
 export async function seedSongs(db = requirePool()) {
   for (const [id, profile] of Object.entries(seedProfiles)) await db.query('INSERT INTO song_profiles(id,settings) VALUES($1,$2) ON CONFLICT DO NOTHING', [id, JSON.stringify(profile)]);
+  await db.query("UPDATE song_profiles SET settings=$1,revision=revision+1 WHERE id='viking' AND settings->>'name'='Viking / Valhalla'",[JSON.stringify(seedProfiles.viking)]);
 }
 async function transaction<T>(work: (db: pg.PoolClient) => Promise<T>): Promise<T> {
   const db = await requirePool().connect();

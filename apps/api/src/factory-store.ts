@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS factory_containers (
  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 INSERT INTO factory_channels(id,name,description) VALUES
- ('veil-of-ages','Veil of Ages','Dark Fantasy / Medieval Ambient') ON CONFLICT DO NOTHING;
+ ('veil-of-ages','Veil of Ages','Epic Viking Songs / Nordic Cinematic Hip-Hop') ON CONFLICT DO NOTHING;
+UPDATE factory_channels SET description='Epic Viking Songs / Nordic Cinematic Hip-Hop' WHERE id='veil-of-ages';
 INSERT INTO factory_containers(id,name,description,position) VALUES
  ('dark-fantasy','Dark Fantasy / Medieval Ambient','Темна атмосферна музика для Veil of Ages',10),
  ('techno','Techno','Електронна танцювальна музика та техно',20),
@@ -30,14 +31,24 @@ INSERT INTO factory_containers(id,name,description,position) VALUES
  ('rock','Rock / Alternative','Рок та альтернативна музика',90),
  ('nordic','Viking / Nordic','Північна, вікінгська й фольклорна музика',100),
  ('pirate-folk','Pirate Folk','Піратські балади й морський фолк',110),
- ('cinematic','Cinematic','Епічна музика для сюжетного монтажу',120)
+ ('cinematic','Cinematic','Епічна музика для сюжетного монтажу',120),
+ ('viking-anthem','Viking Anthem','Сюжетні англомовні Viking-пісні з чоловічим вокалом і великим хором',5),
+ ('viking-rap-duet','Viking Rap / Duet','Nordic hip-hop із чоловічими реп-куплетами та жіночою вокальною відповіддю',6)
 ON CONFLICT DO NOTHING;
 CREATE TABLE IF NOT EXISTS factory_channel_containers (
  channel_id TEXT NOT NULL REFERENCES factory_channels(id) ON DELETE CASCADE,
  container_id TEXT NOT NULL REFERENCES factory_containers(id) ON DELETE RESTRICT,
  PRIMARY KEY(channel_id,container_id)
 );
-INSERT INTO factory_channel_containers(channel_id,container_id) VALUES('veil-of-ages','dark-fantasy') ON CONFLICT DO NOTHING;
+CREATE TABLE IF NOT EXISTS factory_schema_changes(id TEXT PRIMARY KEY,applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+WITH first_run AS (
+ INSERT INTO factory_schema_changes(id) VALUES('veil-of-ages-viking-2026-09') ON CONFLICT DO NOTHING RETURNING id
+), removed AS (
+ DELETE FROM factory_channel_containers WHERE channel_id='veil-of-ages' AND container_id='dark-fantasy' AND EXISTS(SELECT 1 FROM first_run) RETURNING container_id
+)
+INSERT INTO factory_channel_containers(channel_id,container_id)
+ SELECT 'veil-of-ages',desired.container_id FROM first_run CROSS JOIN (VALUES('viking-anthem'),('viking-rap-duet')) AS desired(container_id)
+ON CONFLICT DO NOTHING;
 CREATE TABLE IF NOT EXISTS factory_assets (
  id UUID PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('audio','image','video')),
  hash TEXT NOT NULL, object_key TEXT NOT NULL UNIQUE, name TEXT NOT NULL, bytes BIGINT NOT NULL CHECK(bytes>0),
@@ -49,7 +60,7 @@ CREATE TABLE IF NOT EXISTS factory_assets (
 ALTER TABLE factory_assets ADD COLUMN IF NOT EXISTS container_id TEXT REFERENCES factory_containers(id);
 UPDATE factory_assets SET container_id='dark-fantasy' WHERE kind='audio' AND container_id IS NULL;
 CREATE TABLE IF NOT EXISTS factory_recipe (
- id INTEGER PRIMARY KEY CHECK(id=1), vocal TEXT NOT NULL DEFAULT 'instrumental' CHECK(vocal IN ('instrumental','choir')),
+ id INTEGER PRIMARY KEY CHECK(id=1), vocal TEXT NOT NULL DEFAULT 'choir' CHECK(vocal IN ('instrumental','choir')),
  cover_id UUID REFERENCES factory_assets(id), visual_preset TEXT NOT NULL DEFAULT 'auto',
  motion_intensity TEXT NOT NULL DEFAULT 'cinematic' CHECK(motion_intensity IN ('calm','cinematic','expressive')),
  channel_id TEXT NOT NULL DEFAULT 'veil-of-ages' REFERENCES factory_channels(id), revision INTEGER NOT NULL DEFAULT 1
@@ -58,6 +69,10 @@ ALTER TABLE factory_recipe ADD COLUMN IF NOT EXISTS visual_preset TEXT NOT NULL 
 ALTER TABLE factory_recipe ADD COLUMN IF NOT EXISTS motion_intensity TEXT NOT NULL DEFAULT 'cinematic';
 ALTER TABLE factory_recipe ADD COLUMN IF NOT EXISTS channel_id TEXT NOT NULL DEFAULT 'veil-of-ages' REFERENCES factory_channels(id);
 INSERT INTO factory_recipe(id) VALUES(1) ON CONFLICT DO NOTHING;
+WITH first_run AS (
+ INSERT INTO factory_schema_changes(id) VALUES('veil-of-ages-vocal-songs-2026-09') ON CONFLICT DO NOTHING RETURNING id
+)
+UPDATE factory_recipe SET vocal='choir',revision=revision+1 WHERE id=1 AND EXISTS(SELECT 1 FROM first_run);
 CREATE TABLE IF NOT EXISTS factory_releases (
  id UUID PRIMARY KEY, request_key UUID UNIQUE NOT NULL, track_id UUID NOT NULL UNIQUE REFERENCES factory_assets(id),
  cover_id UUID NOT NULL REFERENCES factory_assets(id), output_id UUID NOT NULL REFERENCES factory_assets(id),
@@ -103,7 +118,7 @@ export async function reserveAsset(storage: ObjectStore, data: { kind: 'audio'|'
     await capacity(db, storage, data.bytes, true);
     const id = randomUUID();
     const asset = (await db.query(`INSERT INTO factory_assets(id,kind,hash,object_key,name,bytes,type,duration,theme,vocal,container_id,state)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'reserved') RETURNING *`,[id,data.kind,data.hash,'factory/'+id,data.name,data.bytes,data.type,data.duration,data.theme,data.vocal,data.kind==='audio'?(data.containerId||'dark-fantasy'):null])).rows[0];
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'reserved') RETURNING *`,[id,data.kind,data.hash,'factory/'+id,data.name,data.bytes,data.type,data.duration,data.theme,data.vocal,data.kind==='audio'?(data.containerId||'viking-anthem'):null])).rows[0];
     return { asset, fresh: true };
   });
 }
@@ -147,7 +162,7 @@ export async function startRelease(storage: ObjectStore, requestKey: string, gen
       sceneAssets=[{id:cover.id,position:0,label:'Єдина сцена',prompt:'',seed:0}];
     }
     await db.query("INSERT INTO factory_assets(id,kind,hash,object_key,name,bytes,type,vocal,state) VALUES($1,'video',$2,$3,$4,$5,'video/mp4',$6,'reserved')",[outputId,id,'factory/'+outputId,'Випуск.mp4',MAX_OUTPUT_BYTES,recipe.vocal]);
-    const title=concept?.title??track.name.replace(/\.[^.]+$/,'').replace(/[<>\x00-\x1f]/g,'').slice(0,75)+' | Dark Fantasy Ambient';
+    const title=concept?.title??track.name.replace(/\.[^.]+$/,'').replace(/[<>\x00-\x1f]/g,'').slice(0,75)+' | Epic Viking Song';
     const visualPreset=chooseVisualPreset('auto',track.hash,track.theme);
     const motionIntensity=motionIntensitySchema.parse(recipe.motion_intensity||'cinematic');
     const sceneCount=generateImage?3:1;

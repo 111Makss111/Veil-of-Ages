@@ -8,7 +8,7 @@ import { generateSong, generatorConfig } from './songs-provider.js';
 import { songsPage, songsCss, songsScript } from './songs-ui.js';
 
 const idSchema = z.object({ id: z.uuid() });
-const profileIdSchema = z.union([z.enum(['pirate', 'viking']), z.uuid()]);
+const profileIdSchema = z.union([z.enum(['pirate', 'viking', 'viking-rap']), z.uuid()]);
 const dailyLimit = () => {
   const value = Number(process.env.SONG_DAILY_LIMIT ?? 10);
   return Number.isInteger(value) && value >= 1 && value <= 100 ? value : 10;
@@ -31,7 +31,7 @@ export async function songsRoutes(app: FastifyInstance) {
   app.get('/songs/style.css', async (_req, reply) => reply.type('text/css').send(songsCss));
   app.get('/songs/app.js', async (_req, reply) => reply.type('application/javascript').send(songsScript));
   app.get('/api/songs/config', async () => ({ ...generatorConfig(), dailyLimit: dailyLimit() }));
-  app.get('/api/songs/profiles', async () => ({ profiles: (await requirePool().query('SELECT * FROM song_profiles ORDER BY id')).rows }));
+  app.get('/api/songs/profiles', async () => ({ profiles: (await requirePool().query("SELECT * FROM song_profiles ORDER BY CASE id WHEN 'viking' THEN 0 WHEN 'viking-rap' THEN 1 WHEN 'pirate' THEN 2 ELSE 3 END,id")).rows }));
   app.post('/api/songs/profiles', { bodyLimit: 10000, logLevel: 'silent' }, async request => {
     const { id, settings } = z.object({ id: z.uuid(), settings: profileSchema }).strict().parse(request.body);
     await requirePool().query('INSERT INTO song_profiles(id,settings) VALUES($1,$2) ON CONFLICT DO NOTHING', [id, JSON.stringify(settings)]);
