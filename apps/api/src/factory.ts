@@ -12,9 +12,9 @@ import { createObjectStore, STORAGE_LIMIT, INPUT_LIMIT, type ObjectStore } from 
 import { FactoryError, reserveAsset, startRelease, factoryLock } from './factory-store.js';
 import { factoryPage, factoryCss, factoryScript } from './factory-ui.js';
 import { factoryChannelCss } from './factory-channel-ui.js';
-import { createCloudflareImageGenerator, type ImageGenerator } from './factory-ai.js';
+import { createPreferredImageGenerator, imageGeneratorProvider, type ImageGenerator } from './factory-ai.js';
 import { ACTIVE_EFFECT_IDS, EFFECT_CATALOG, motionIntensitySchema } from './factory-effects.js';
-import { approveSongIdea, createSongIdea, textGeneratorConfigured } from './factory-song.js';
+import { approveSongIdea, createSongIdea, textGeneratorConfigured, textGeneratorProvider } from './factory-song.js';
 import { songMode, songPackageSchema } from './factory-song-domain.js';
 import { buildYoutubeThumbnail } from './factory-thumbnail.js';
 
@@ -24,7 +24,8 @@ const containerId=z.string().regex(/^[a-z0-9-]{2,40}$/);
 const UPLOAD_MAX=25*1024*1024;
 export async function factoryRoutes(app: FastifyInstance, options: { storage?: ObjectStore; render?: typeof renderMedia; probe?: (file: string, kind: string) => Promise<number>; imageGenerator?: ImageGenerator|null } = {}) {
   const storage=options.storage ?? createObjectStore();
-  const imageGenerator=options.imageGenerator===undefined?createCloudflareImageGenerator():options.imageGenerator;
+  const imageGenerator=options.imageGenerator===undefined?createPreferredImageGenerator():options.imageGenerator;
+  const configuredImageProvider=options.imageGenerator===undefined?imageGeneratorProvider():options.imageGenerator?'Генератор образів':null;
   const tasks=new Set<Promise<void>>(); const controller=new AbortController(); let uploading=false;
   const needStorage=()=>{if(!storage)throw new FactoryError(503,'Підключи приватне сховище R2 в Render. Файли ще не завантажуються.');return storage;};
   app.addHook('onRequest',async(req,reply)=>{
@@ -56,7 +57,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
       db.query('SELECT * FROM factory_song_ideas ORDER BY created_at DESC LIMIT 20')
     ]);
     const availableByChannel:Record<string,Record<string,number>>={};for(const r of counts.rows)(availableByChannel[r.channel_id]??={})[r.vocal]=Number(r.available);
-    return {configured:!!storage,aiConfigured:!!imageGenerator,textAiConfigured:textGeneratorConfigured(),recipe:recipe.rows[0],effects:EFFECT_CATALOG,assets:assets.rows,releases:releases.rows,ideas:ideas.rows,channels:channels.rows,containers:containers.rows,channelContainers:channelContainers.rows,availableByChannel,availableByVocal:Object.fromEntries(counts.rows.filter(r=>r.channel_id==='veil-of-ages').map(r=>[r.vocal,Number(r.available)])),limit:STORAGE_LIMIT,inputLimit:INPUT_LIMIT};
+    return {configured:!!storage,aiConfigured:!!imageGenerator,imageAiProvider:configuredImageProvider,textAiConfigured:textGeneratorConfigured(),textAiProvider:textGeneratorProvider(),recipe:recipe.rows[0],effects:EFFECT_CATALOG,assets:assets.rows,releases:releases.rows,ideas:ideas.rows,channels:channels.rows,containers:containers.rows,channelContainers:channelContainers.rows,availableByChannel,availableByVocal:Object.fromEntries(counts.rows.filter(r=>r.channel_id==='veil-of-ages').map(r=>[r.vocal,Number(r.available)])),limit:STORAGE_LIMIT,inputLimit:INPUT_LIMIT};
   });
   app.post('/api/factory/ideas',{bodyLimit:5000,logLevel:'silent'},async req=>{
     const body=z.object({channelId:containerId.default('veil-of-ages'),mode:songMode,brief:z.string().trim().max(3000).default('')}).strict().parse(req.body);
@@ -181,7 +182,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
         return writes;
       };
       const failure=(error:unknown)=>{
-        if(stage==='generating-image')return error instanceof Error&&/^Workers AI|^Генерац/.test(error.message)?error.message:'Workers AI не завершив створення обкладинки. Перевір доступ до Workers AI та повтори з тією самою концепцією.';
+        if(stage==='generating-image')return error instanceof Error&&/^(OpenAI|Workers AI|Генерац)/.test(error.message)?error.message:'Генератор не завершив створення обкладинки. Перевір доступ до OpenAI та повтори з тією самою концепцією.';
         if(stage==='downloading')return 'Не вдалося отримати матеріали з R2. Перевір підключення сховища та повтори.';
         if(stage==='saving-cover'||stage==='uploading')return 'R2 не підтвердив збереження файла. Перевір сховище перед повтором.';
         if(stage==='rendering'&&error instanceof MediaToolError&&error.reason==='timeout')return 'Монтаж не вклався у 90 хвилин. Трек і обкладинка збережені; повтор використає ті самі матеріали.';
@@ -206,7 +207,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
             await writeFile(images[index]!,await s.get(scene.object_key,8*1024*1024));
           }else{
             if(release.recipe.coverMode!=='ai'||!imageGenerator)throw Error('Image generator unavailable');
-            await update('generating-image',10+index*6,`Workers AI створює образ ${index+1} із ${scenes.length}: ${scene.label}.`,true);
+            await update('generating-image',10+index*6,`${configuredImageProvider||'Генератор'} створює образ ${index+1} із ${scenes.length}: ${scene.label}.`,true);
             const generated=await imageGenerator(scene.prompt,Number(scene.seed),controller.signal);
             await update('saving-cover',14+index*6,`Зберігаємо образ ${index+1} із ${scenes.length} у R2.`,true);
             await s.put(scene.object_key,generated.data,generated.type);await writeFile(images[index]!,generated.data);

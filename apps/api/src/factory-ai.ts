@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { mediaKind } from './media-render.js';
+import { openAIConfig, openAIRequest, OpenAIProviderError } from './openai-provider.js';
 
 export const MAX_GENERATED_IMAGE_BYTES = 8 * 1024 * 1024;
 export const GENERATED_SCENE_COUNT = 3;
@@ -73,5 +74,37 @@ export function createCloudflareImageGenerator(): ImageGenerator | null {
       await new Promise(resolve=>setTimeout(resolve,attempt*1200));
     }
     throw new Error('Workers AI не завершив створення образу.');
+  };
+}
+
+export function createOpenAIImageGenerator():ImageGenerator|null{
+  const {configured,imageModel}=openAIConfig();if(!configured)return null;
+  return async(prompt,seed,signal)=>{
+    let lastError:unknown;
+    for(let attempt=1;attempt<=3;attempt++){
+      try{
+        const payload=await openAIRequest('images/generations',{model:imageModel,prompt:`${prompt}\nComposition variation reference: ${seed}.`,size:'1536x1024',quality:'medium',output_format:'jpeg'},signal,180000) as {data?:Array<{b64_json?:unknown}>};
+        const encoded=payload.data?.[0]?.b64_json;
+        if(typeof encoded!=='string'||encoded.length>MAX_GENERATED_IMAGE_BYTES*1.5)throw new OpenAIProviderError('OpenAI не повернув готову картинку.',503,false);
+        const data=Buffer.from(encoded,'base64');if(data.length<16||data.length>MAX_GENERATED_IMAGE_BYTES)throw new OpenAIProviderError('Згенерована картинка має неправильний розмір.',503,false);
+        const kind=mediaKind(data.subarray(0,16),true);return {data,type:kind==='png'?'image/png':'image/jpeg'};
+      }catch(error){
+        lastError=error;if(signal?.aborted)throw error;
+        if(!(error instanceof OpenAIProviderError)||!error.retryable||attempt===3)throw error;
+        await new Promise(resolve=>setTimeout(resolve,attempt*1200));
+      }
+    }
+    throw lastError;
+  };
+}
+
+export const imageGeneratorProvider=()=>openAIConfig().configured?'OpenAI':createCloudflareImageGenerator()?'Workers AI':null;
+
+export function createPreferredImageGenerator():ImageGenerator|null{
+  const openai=createOpenAIImageGenerator(),cloudflare=createCloudflareImageGenerator();
+  if(!openai)return cloudflare;if(!cloudflare)return openai;
+  return async(prompt,seed,signal)=>{
+    try{return await openai(prompt,seed,signal);}
+    catch(error){if(!(error instanceof OpenAIProviderError)||!error.retryable)throw error;return cloudflare(prompt,seed,signal);}
   };
 }

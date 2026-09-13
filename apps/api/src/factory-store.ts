@@ -157,7 +157,7 @@ export async function startRelease(storage: ObjectStore, requestKey: string, gen
     let concept:ReturnType<typeof buildReleaseConcept>|null=null;
     let sceneAssets:Array<{id:string;position:number;label:string;prompt:string;seed:number}>=[];
     let cover = generateImage ? null : (await db.query("SELECT id FROM factory_assets WHERE id=$1 AND kind='image' AND state='ready'",[recipe.cover_id])).rows[0];
-    if(!generateImage&&!cover)throw new FactoryError(409,'Підключи Workers AI або додай резервну обкладинку.');
+    if(!generateImage&&!cover)throw new FactoryError(409,'Підключи генератор образів або додай резервну обкладинку.');
     await capacity(db, storage, MAX_OUTPUT_BYTES+(generateImage?MAX_GENERATED_IMAGE_BYTES*generatedSceneCount:0));
     const id=randomUUID(), outputId=randomUUID();
     if(generateImage){
