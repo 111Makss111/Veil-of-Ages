@@ -6,7 +6,7 @@ process.env.PUBLIC_API_URL = 'https://api.example.test';
 process.env.DATABASE_URL = 'postgresql://test:test@localhost/test';
 process.env.YOUTUBE_REFRESH_TOKEN = 'test-refresh';
 process.env.YOUTUBE_SETUP_SECRET = 'test-upload-secret-'.repeat(3);
-const { sendPrivateVideo, isMp4, youtubeUploadRoutes, MAX_VIDEO_BYTES } = await import('./youtube-upload.js');
+const { sendPrivateVideo, setVideoThumbnail, isMp4, youtubeUploadRoutes, MAX_VIDEO_BYTES } = await import('./youtube-upload.js');
 const file = Buffer.from('0000ftypisom0000');
 const { pool } = await import('./db.js');
 
@@ -20,6 +20,8 @@ test('upload always requests private visibility and returns confirmed video ID',
       assert.equal(data.status.privacyStatus, 'private');
       assert.equal(data.status.selfDeclaredMadeForKids, false);
       assert.equal(data.status.containsSyntheticMedia, true);
+      assert.equal(data.snippet.description,'A northern oath and a journey home.');
+      assert.deepEqual(data.snippet.tags,['Viking music','Veil of Ages']);
       assert.ok(String(_url).includes('notifySubscribers=false'));
       return new Response(null, { headers: { location: 'https://www.googleapis.com/upload/youtube/v3/videos?upload_id=test' } });
     }
@@ -28,9 +30,15 @@ test('upload always requests private visibility and returns confirmed video ID',
     return new Response(JSON.stringify({ id: 'abcdefghijk', status: { privacyStatus: 'private' } }), { status: 201 });
   };
   try {
-    assert.equal(await sendPrivateVideo(file, { title: 'Тест', children: 'no', synthetic: 'yes' }, 'secret-token'), 'abcdefghijk');
+    assert.equal(await sendPrivateVideo(file, { title: 'Тест', children: 'no', synthetic: 'yes',description:'A northern oath and a journey home.',tags:['Viking music','Veil of Ages'] }, 'secret-token'), 'abcdefghijk');
     assert.equal(calls.length, 2);
   } finally { globalThis.fetch = original; }
+});
+
+test('generated artwork can be set as the private video thumbnail',async()=>{
+  const original=globalThis.fetch,png=Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),Buffer.alloc(40)]);let called=false;
+  globalThis.fetch=async(url,init)=>{called=true;assert.equal(String(url),'https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId=abcdefghijk');assert.equal(init?.method,'POST');assert.equal((init?.headers as Record<string,string>)['Content-Type'],'image/png');assert.deepEqual(Buffer.from(init?.body as Uint8Array),png);return new Response(JSON.stringify({items:[{}]}),{status:200});};
+  try{await setVideoThumbnail(png,'image/png','abcdefghijk','secret-token');assert.equal(called,true);}finally{globalThis.fetch=original;}
 });
 
 test('untrusted upload destinations never receive the token or file', async () => {

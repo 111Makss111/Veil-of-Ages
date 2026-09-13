@@ -10,6 +10,7 @@ import { createObjectStore, INPUT_LIMIT, STORAGE_LIMIT, type ObjectStore } from 
 process.env.DATABASE_URL='postgresql://test:test@localhost/test';
 process.env.PUBLIC_API_URL='https://api.example.test';
 const { pool }=await import('./db.js');
+const { songsMigration }=await import('./songs-store.js');
 const { chooseVisualPreset, factoryMigration, reserveAsset }=await import('./factory-store.js');
 const { buildReleaseConcept }=await import('./factory-ai.js');
 const { factoryRoutes }=await import('./factory.js');
@@ -33,6 +34,9 @@ test('factory creates a stable three-part visual story',()=>{
   assert.deepEqual(concept.scenes.map(scene=>scene.label),['Вступ','Розвиток','Кульмінація']);
   assert.equal(new Set(concept.scenes.map(scene=>scene.hash)).size,3);
   assert.deepEqual(concept,buildReleaseConcept('ab'.repeat(32)));
+  const linked=buildReleaseConcept('cd'.repeat(32),0,{title:'Oath Beneath the Mountain',concept:'Two siblings return home after a winter voyage.',artworkPrompt:'A brother and sister above a stormy Nordic fjord, muted gold firelight.'});
+  assert.equal(linked.title,'Oath Beneath the Mountain');
+  assert.ok(linked.scenes.every(scene=>scene.prompt.includes('brother and sister above a stormy Nordic fjord')));
 });
 
 test('factory: durable library, quotas, duplicates, reservation, retry, review and private upload',async()=>{
@@ -50,9 +54,10 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
   const headers={origin:'https://api.example.test'};
   const post=(url:string,payload:Record<string,unknown>)=>app.inject({method:'POST',url,headers,payload});
   const upload=(kind:string,body:Buffer,name:string)=>app.inject({method:'POST',url:'/api/factory/assets?kind='+kind+'&vocal=instrumental',headers:{...headers,'content-type':'multipart/form-data; boundary=testboundary'},payload:Buffer.concat([Buffer.from('--testboundary\r\nContent-Disposition: form-data; name="file"; filename="'+name+'"\r\nContent-Type: application/octet-stream\r\n\r\n'),body,Buffer.from('\r\n--testboundary--\r\n')])});
+  const uploadForProject=(body:Buffer,name:string,projectId:string)=>app.inject({method:'POST',url:'/api/factory/assets?kind=audio&songProjectId='+projectId,headers:{...headers,'content-type':'multipart/form-data; boundary=testboundary'},payload:Buffer.concat([Buffer.from('--testboundary\r\nContent-Disposition: form-data; name="file"; filename="'+name+'"\r\nContent-Type: application/octet-stream\r\n\r\n'),body,Buffer.from('\r\n--testboundary--\r\n')])});
   const waitState=async(id:string,state:string)=>{for(let i=0;i<100;i++){const r=(await q('SELECT * FROM factory_releases WHERE id=$1',[id])).rows[0] as {state:string};if(r.state===state)return;await new Promise(r=>setTimeout(r,10));}assert.fail('Expected '+state);};
   try{
-    await db.exec(factoryMigration);
+    await db.exec(songsMigration);await db.exec(factoryMigration);
     authorized=false;assert.equal((await app.inject('/api/factory')).statusCode,401);authorized=true;
     assert.equal((await app.inject({method:'POST',url:'/api/factory/recipe',headers:{origin:'https://evil.test'},payload:{}})).statusCode,403);
     const png=Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),Buffer.alloc(40)]),mp3=Buffer.from('ID3-this-is-an-isolated-test-audio');
@@ -91,6 +96,14 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
     assert.equal((await post('/api/factory/releases/'+id+'/publish',{children:'no',synthetic:'yes',rights:true})).statusCode,409);assert.equal(published,1);
     const removed=await post('/api/factory/releases/'+id+'/delete',{confirmation:'DELETE'});assert.equal(removed.statusCode,200,removed.body);assert.equal((await q('SELECT * FROM factory_releases WHERE id=$1',[id])).rows.length,0);assert.equal((await q("SELECT * FROM factory_assets WHERE kind='audio' AND id=$1",[audio.json().id])).rows.length,1);assert.equal(deletes,4);
     assert.equal((await post('/api/factory/assets/'+audio.json().id+'/delete',{confirmation:'DELETE'})).statusCode,200);assert.equal(deletes,5);
+    const projectId=randomUUID(),versionId=randomUUID(),content={title:'Oath Beneath the Mountain',concept:'Two siblings return from exile and answer the call of their mountain home.',lyrics:'[Verse 1]\n'+('We carry the winter road beneath our feet\n'.repeat(12))+'[Chorus]\n'+('The mountain calls us home again\n'.repeat(8)),sunoPrompt:'Nordic cinematic hip-hop, low male rap verses, melodic female chorus, frame drums and bowed strings.',artworkPrompt:'Two original siblings overlooking a stormy Nordic fjord, forest green and muted gold, cinematic realism, no text.'};
+    await q("INSERT INTO song_profiles(id,settings) VALUES('viking-rap',$1)",[JSON.stringify({name:'Viking Rap',direction:'Original mountain stories.',sound:'Nordic rap and melodic duet.',visual:'Stormy Nordic cinematic realism.'})]);
+    await q("INSERT INTO song_projects(id,name,profile_id,brief) VALUES($1,'Linked song','viking-rap','A linked production test with enough detail.')",[projectId]);
+    await q("INSERT INTO song_versions(id,project_id,content,lyric_hash) VALUES($1,$2,$3,$4)",[versionId,projectId,JSON.stringify(content),'ab'.repeat(32)]);await q('UPDATE song_projects SET approved_version=$2 WHERE id=$1',[projectId,versionId]);
+    const linked=await uploadForProject(Buffer.from('ID3-linked-approved-song-audio'),'download.mp3',projectId);assert.equal(linked.statusCode,201,linked.body);
+    const linkedAsset=(await q('SELECT * FROM factory_assets WHERE id=$1',[linked.json().id])).rows[0] as {name:string;vocal:string;container_id:string;song_project_id:string;song_version_id:string};
+    assert.equal(linkedAsset.name,'Oath Beneath the Mountain.mp3');assert.equal(linkedAsset.vocal,'choir');assert.equal(linkedAsset.container_id,'viking-rap-duet');assert.equal(linkedAsset.song_project_id,projectId);assert.equal(linkedAsset.song_version_id,versionId);
+    assert.equal((await post('/api/factory/assets/'+linked.json().id+'/delete',{confirmation:'DELETE'})).statusCode,200);
     failPut=true;const failed=await upload('audio',Buffer.from('ID3-another-test-audio-more-bytes'),'Other.mp3');assert.equal(failed.statusCode,503);assert.ok(!failed.body.includes('secret'));
     assert.ok((await app.inject('/api/factory/storage')).json().reserved>0);
     failPut=false;assert.equal((await upload('audio',Buffer.from('ID3-another-test-audio-more-bytes'),'Other.mp3')).statusCode,409);

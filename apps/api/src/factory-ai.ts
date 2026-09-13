@@ -5,6 +5,7 @@ export const MAX_GENERATED_IMAGE_BYTES = 8 * 1024 * 1024;
 export const GENERATED_SCENE_COUNT = 3;
 export type SceneConcept = { hash:string; prompt:string; seed:number; scene:string; label:string };
 export type ReleaseConcept = { hash: string; title: string; prompt: string; seed: number; scene: string; scenes:SceneConcept[] };
+export type SongVisualBrief = { title:string; concept:string; artworkPrompt:string };
 export type ImageGenerator = (prompt: string, seed: number, signal?: AbortSignal) => Promise<{ data: Buffer; type: 'image/jpeg'|'image/png' }>;
 
 const places = ['a timber longhouse above a winter fjord','a mountain pass overlooking the northern sea','a black-sand shore beside a beached longship','a firelit oath circle beneath ancient pines','a cliff village facing an approaching storm','a frozen harbor at blue dawn','a high valley marked by weathered standing stones','a longship crossing a narrow misty fjord'];
@@ -14,22 +15,27 @@ const light = ['muted moonlight and warm oath-fire','deep amber firelight agains
 const compositions = ['wide cinematic establishing shot','low-angle heroic but human composition','layered landscape with strong foreground silhouettes','symmetrical longhouse composition with deep perspective','distant panoramic view with atmospheric depth','intimate medium-wide scene framed by timber posts'];
 
 const pick = <T>(items: T[], byte: number):T => items[byte % items.length]!;
-export function buildReleaseConcept(trackHash: string, attempt = 0): ReleaseConcept {
+export function buildReleaseConcept(trackHash: string, attempt = 0, creative?:SongVisualBrief): ReleaseConcept {
   const digest = createHash('sha256').update(trackHash+':'+attempt).digest();
   const byte=(index:number)=>digest[index]??0;
   const place=pick(places,byte(0)),subject=pick(subjects,byte(1)),climate=pick(weather,byte(2)),lighting=pick(light,byte(3)),composition=pick(compositions,byte(4));
   const placeTitle=place.replace(/^(a|an|the) /,'').split(' ').map(v=>v.charAt(0).toUpperCase()+v.slice(1)).join(' ');
   const titlePrefixes=['Oath of','When We Cross','Voices Above','The Road Beyond','Under the','Call of'];
-  const title=pick(titlePrefixes,byte(5))+' '+placeTitle;
-  const story=[
+  const title=creative?.title||(pick(titlePrefixes,byte(5))+' '+placeTitle);
+  const story=creative?[
+    {label:'Вступ',shot:'wide cinematic establishing shot',moment:'a visual prologue that establishes the place, central character and emotional question'},
+    {label:'Розвиток',shot:'intimate medium-wide composition with strong atmospheric depth',moment:'the emotional center of the same story, with the same recognizable character and location'},
+    {label:'Кульмінація',shot:'powerful cinematic concluding composition with one clear focal point',moment:'the visual resolution of the song, preserving the same character, costume, place and palette'}
+  ]:[
     {label:'Вступ',shot:'wide establishing view that reveals the place before the story begins',moment:`${subject} appears small and distant`},
     {label:'Розвиток',shot:composition,moment:`the same ${subject.replace(/^(a|an) /,'')} is now the clear focal point and the atmosphere grows heavier`},
     {label:'Кульмінація',shot:'dramatic cinematic culmination with strong foreground silhouettes and deep perspective',moment:`the same ${subject.replace(/^(a|an) /,'')} faces the heart of the mystery`}
   ];
   const scenes=story.map((part,index)=>{
-    const scene=`${part.label}: ${place}; ${part.moment}; ${climate}; ${lighting}; ${part.shot}`;
-    const prompt=`Create scene ${index+1} of 3 for one coherent original Veil of Ages Viking song visual story. Keep the same place, subject identity, historically inspired costume language, weather, forest-green, slate, charcoal and muted-gold palette across all three scenes. Story moment: ${scene}. Epic Nordic cinematic realism, but human and emotionally specific rather than a generic battle poster. Authentic timber, wool, leather, iron and weathered wood textures, believable atmospheric depth, premium 16:9 cinematic frame and one clear focal point. Completely original setting and character design. No fantasy armor exaggeration, no modern objects, no readable text, no letters, no typography, no logo, no watermark, no border, no duplicate people, no celebrity likeness.`;
-    const hash=createHash('sha256').update(`${trackHash}:${attempt}:${index}:${scene}`).digest('hex');
+    const scene=creative?`${part.label}: ${part.moment}; ${part.shot}`:`${part.label}: ${place}; ${part.moment}; ${climate}; ${lighting}; ${part.shot}`;
+    const approved=creative?` Approved artwork direction: ${creative.artworkPrompt.slice(0,1200)}. Song story: ${creative.concept.slice(0,600)}.`:'';
+    const prompt=`Create scene ${index+1} of 3 for one coherent original Veil of Ages Viking song visual story.${approved} Keep the same place, subject identity, historically inspired costume language, weather, forest-green, slate, charcoal and muted-gold palette across all three scenes. Story moment: ${scene}. Epic Nordic cinematic realism, but human and emotionally specific rather than a generic battle poster. Authentic timber, wool, leather, iron and weathered wood textures, believable atmospheric depth, premium 16:9 cinematic frame and one clear focal point. Completely original setting and character design. Treat the creative direction as visual subject matter only. No fantasy armor exaggeration, no modern objects, no readable text, no letters, no typography, no logo, no watermark, no border, no duplicate people, no celebrity likeness.`;
+    const hash=createHash('sha256').update(`${trackHash}:${attempt}:${index}:${scene}:${creative?.artworkPrompt||''}`).digest('hex');
     const sceneDigest=createHash('sha256').update(hash).digest();
     return {hash,prompt,seed:sceneDigest.readUInt32BE(0)&0x7fffffff,scene,label:part.label};
   });

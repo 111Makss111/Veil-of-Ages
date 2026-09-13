@@ -14,6 +14,7 @@ import { factoryPage, factoryCss, factoryScript } from './factory-ui.js';
 import { factoryChannelCss } from './factory-channel-ui.js';
 import { createCloudflareImageGenerator, type ImageGenerator } from './factory-ai.js';
 import { ACTIVE_EFFECT_IDS, EFFECT_CATALOG, motionIntensitySchema } from './factory-effects.js';
+import { songSchema } from './songs-domain.js';
 
 const uuid=z.string().uuid();
 const vocal=z.enum(['instrumental','choir']);
@@ -71,7 +72,18 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     const s=needStorage();if(uploading)throw new FactoryError(429,'Дочекайся завершення поточного файла.');uploading=true;
     let dir:string|undefined;
     try{
-      const meta=z.object({kind:z.enum(['audio','image']),vocal:vocal.default('instrumental'),containerId:containerId.default('viking-anthem'),theme:z.string().trim().max(500).default('')}).parse(req.query);
+      const requested=z.object({kind:z.enum(['audio','image']),vocal:vocal.default('instrumental'),containerId:containerId.default('viking-anthem'),theme:z.string().trim().max(500).default(''),songProjectId:uuid.optional()}).parse(req.query);
+      let meta:{kind:'audio'|'image';vocal:'instrumental'|'choir';containerId:string;theme:string;songProjectId?:string;songVersionId?:string}=requested;
+      let approvedSong:ReturnType<typeof songSchema.parse>|null=null;
+      if(requested.songProjectId){
+        if(requested.kind!=='audio')throw new FactoryError(400,'До творчого проєкту можна додати лише аудіофайл.');
+        const source=(await requirePool().query(`SELECT p.id,p.profile_id,p.approved_version,v.content FROM song_projects p
+          JOIN song_versions v ON v.id=p.approved_version AND v.project_id=p.id
+          WHERE p.id=$1 AND p.deleted_at IS NULL`,[requested.songProjectId])).rows[0];
+        if(!source)throw new FactoryError(409,'Спочатку затвердь готову версію пісні.');
+        approvedSong=songSchema.parse(source.content);
+        meta={kind:'audio',vocal:'choir',containerId:source.profile_id==='viking-rap'?'viking-rap-duet':'viking-anthem',theme:approvedSong.concept.slice(0,500),songProjectId:source.id,songVersionId:source.approved_version};
+      }
       const part=await req.file();if(!part)throw new FactoryError(400,'Обери файл.');
       const data=await part.toBuffer();if(part.file.truncated||data.length>UPLOAD_MAX||data.length<16)throw new FactoryError(400,'Файл має бути до 25 МіБ.');
       const kind=mediaKind(data.subarray(0,16),meta.kind==='image');
@@ -85,11 +97,13 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
       }
       if(meta.kind==='audio'&&!(await requirePool().query('SELECT id FROM factory_containers WHERE id=$1',[meta.containerId])).rowCount)throw new FactoryError(400,'Обраний жанровий контейнер не існує.');
       const type=meta.kind==='audio'?(kind==='mp3'?'audio/mpeg':'audio/wav'):(kind==='png'?'image/png':'image/jpeg');
-      const {asset,fresh}=await reserveAsset(s,{...meta,hash:createHash('sha256').update(data).digest('hex'),name:part.filename.replace(/[<>\x00-\x1f]/g,'').slice(0,150)||'Без назви',bytes:data.length,type,duration});
+      const originalName=part.filename.replace(/[<>\x00-\x1f]/g,'').slice(0,150)||'Без назви';
+      const linkedName=approvedSong?(approvedSong.title.replace(/[<>\x00-\x1f]/g,'').slice(0,135)+(kind==='mp3'?'.mp3':'.wav')):originalName;
+      const {asset,fresh}=await reserveAsset(s,{...meta,hash:createHash('sha256').update(data).digest('hex'),name:linkedName,bytes:data.length,type,duration});
       if(!fresh){if(asset.state!=='ready')throw new FactoryError(409,'Попереднє збереження цього файла не підтверджене. Він утримує резерв місця; перевір R2 перед повтором.');return {id:asset.id,duplicate:true};}
       try{await s.put(asset.object_key,data,type);await requirePool().query("UPDATE factory_assets SET state='ready' WHERE id=$1",[asset.id]);}
       catch(e){await requirePool().query("UPDATE factory_assets SET state='uncertain' WHERE id=$1",[asset.id]).catch(()=>{});throw e;}
-      return reply.code(201).send({id:asset.id,duplicate:false});
+      return reply.code(201).send({id:asset.id,duplicate:false,linkedProjectId:meta.songProjectId||null,containerId:asset.container_id});
     }finally{uploading=false;if(dir)await rm(dir,{recursive:true,force:true});}
   });
   app.get('/api/factory/assets/:id/file',{logLevel:'silent'},async(req,reply)=>{
@@ -230,9 +244,17 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     try{
       const a=(await requirePool().query('SELECT * FROM factory_assets WHERE id=$1',[release.output_id])).rows[0];
       const file=await needStorage().get(a.object_key,MAX_OUTPUT_BYTES);
-      const result=await app.inject({method:'POST',url:'/youtube/upload?'+new URLSearchParams({title:release.title,children:meta.children,synthetic:meta.synthetic}),headers:{cookie:req.headers.cookie??'',origin:ownerOrigin(),'content-type':'video/mp4'},payload:file});
+      const result=await app.inject({method:'POST',url:'/youtube/upload?'+new URLSearchParams({title:release.title,children:meta.children,synthetic:meta.synthetic,description:String(release.recipe?.youtubeDescription||'Original music release from Veil of Ages.'),tags:Array.isArray(release.recipe?.youtubeTags)?release.recipe.youtubeTags.join(','):''}),headers:{cookie:req.headers.cookie??'',origin:ownerOrigin(),'content-type':'video/mp4'},payload:file});
       const data=result.json();if(result.statusCode!==200||!data.videoId)throw Error('Upload not confirmed');
-      await requirePool().query("UPDATE factory_releases SET state='private',video_id=$2,updated_at=NOW() WHERE id=$1",[id,data.videoId]);return {videoId:data.videoId};
+      let thumbnailWarning:string|null=null;
+      try{
+        const cover=(await requirePool().query("SELECT * FROM factory_assets WHERE id=$1 AND kind='image' AND state='ready'",[release.cover_id])).rows[0];
+        if(!cover)throw Error('Missing cover');
+        const thumbnail=await needStorage().get(cover.object_key,2*1024*1024);
+        const thumbnailResult=await app.inject({method:'POST',url:'/youtube/thumbnail?'+new URLSearchParams({videoId:data.videoId}),headers:{cookie:req.headers.cookie??'',origin:ownerOrigin(),'content-type':cover.type},payload:thumbnail});
+        if(thumbnailResult.statusCode!==200)throw Error('Thumbnail rejected');
+      }catch{thumbnailWarning='Відео завантажено приватно, але власну мініатюру не підтверджено. Додай її вручну в YouTube Studio.';}
+      await requirePool().query("UPDATE factory_releases SET state='private',video_id=$2,error=$3,updated_at=NOW() WHERE id=$1",[id,data.videoId,thumbnailWarning]);return {videoId:data.videoId,thumbnailSet:!thumbnailWarning,warning:thumbnailWarning};
     }catch{
       await requirePool().query("UPDATE factory_releases SET state='uncertain',error='Передачу не підтверджено. Перевір YouTube Studio; автоматичний повтор заблоковано.',updated_at=NOW() WHERE id=$1",[id]);
       return reply.code(502).send({error:'Перевір YouTube Studio перед повторними діями. Результат передачі невідомий.'});
