@@ -87,6 +87,7 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
   try{
     await db.exec(factoryMigration);await db.exec(factorySongMigration);
     authorized=false;assert.equal((await app.inject('/api/factory')).statusCode,401);authorized=true;
+    const factoryHtml=await app.inject('/factory');assert.match(factoryHtml.body,/\/factory\/icon\.svg/);const favicon=await app.inject('/factory/icon.svg');assert.equal(favicon.statusCode,200);assert.match(favicon.headers['content-type']||'',/image\/svg\+xml/);assert.match(favicon.body,/bde998/);
     assert.equal((await app.inject({method:'POST',url:'/api/factory/recipe',headers:{origin:'https://evil.test'},payload:{}})).statusCode,403);
     const png=Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),Buffer.alloc(40)]),mp3=Buffer.from('ID3-this-is-an-isolated-test-audio');
     const image=await upload('image',png,'castle.png');assert.equal(image.statusCode,201,image.body);
