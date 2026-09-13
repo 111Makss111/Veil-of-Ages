@@ -12,6 +12,8 @@ process.env.PUBLIC_API_URL='https://api.example.test';
 const { pool }=await import('./db.js');
 const { chooseVisualPreset, factoryMigration, reserveAsset }=await import('./factory-store.js');
 const { buildReleaseConcept }=await import('./factory-ai.js');
+const { factorySongMigration }=await import('./factory-song.js');
+const { buildYoutubeThumbnail }=await import('./factory-thumbnail.js');
 const { factoryRoutes }=await import('./factory.js');
 
 test('factory browser script parses and storage fails closed without configuration',()=>{
@@ -35,6 +37,13 @@ test('factory creates a stable three-part visual story',()=>{
   assert.deepEqual(concept,buildReleaseConcept('ab'.repeat(32)));
 });
 
+test('factory builds a bounded branded YouTube thumbnail',async()=>{
+  const source=Buffer.from('<svg width="1280" height="720" xmlns="http://www.w3.org/2000/svg"><rect width="1280" height="720" fill="#31513a"/></svg>');
+  const thumbnail=await buildYoutubeThumbnail(source,'Oath Beneath the Winter Mountain');
+  assert.deepEqual([...thumbnail.subarray(0,3)],[0xff,0xd8,0xff]);
+  assert.ok(thumbnail.length<2*1024*1024);
+});
+
 test('factory: durable library, quotas, duplicates, reservation, retry, review and private upload',async()=>{
   const db=new PGlite();const originalQuery=pool!.query,originalConnect=pool!.connect;
   const q=async(sql:string,args?:unknown[])=>{const r=await db.query(sql,args);return {...r,rowCount:r.affectedRows||r.rows.length};};
@@ -50,9 +59,10 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
   const headers={origin:'https://api.example.test'};
   const post=(url:string,payload:Record<string,unknown>)=>app.inject({method:'POST',url,headers,payload});
   const upload=(kind:string,body:Buffer,name:string)=>app.inject({method:'POST',url:'/api/factory/assets?kind='+kind+'&vocal=instrumental',headers:{...headers,'content-type':'multipart/form-data; boundary=testboundary'},payload:Buffer.concat([Buffer.from('--testboundary\r\nContent-Disposition: form-data; name="file"; filename="'+name+'"\r\nContent-Type: application/octet-stream\r\n\r\n'),body,Buffer.from('\r\n--testboundary--\r\n')])});
+  const uploadIdea=(body:Buffer,name:string,ideaId:string)=>app.inject({method:'POST',url:'/api/factory/assets?kind=audio&ideaId='+ideaId,headers:{...headers,'content-type':'multipart/form-data; boundary=testboundary'},payload:Buffer.concat([Buffer.from('--testboundary\r\nContent-Disposition: form-data; name="file"; filename="'+name+'"\r\nContent-Type: application/octet-stream\r\n\r\n'),body,Buffer.from('\r\n--testboundary--\r\n')])});
   const waitState=async(id:string,state:string)=>{for(let i=0;i<100;i++){const r=(await q('SELECT * FROM factory_releases WHERE id=$1',[id])).rows[0] as {state:string};if(r.state===state)return;await new Promise(r=>setTimeout(r,10));}assert.fail('Expected '+state);};
   try{
-    await db.exec(factoryMigration);
+    await db.exec(factoryMigration);await db.exec(factorySongMigration);
     authorized=false;assert.equal((await app.inject('/api/factory')).statusCode,401);authorized=true;
     assert.equal((await app.inject({method:'POST',url:'/api/factory/recipe',headers:{origin:'https://evil.test'},payload:{}})).statusCode,403);
     const png=Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),Buffer.alloc(40)]),mp3=Buffer.from('ID3-this-is-an-isolated-test-audio');
@@ -91,6 +101,15 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
     assert.equal((await post('/api/factory/releases/'+id+'/publish',{children:'no',synthetic:'yes',rights:true})).statusCode,409);assert.equal(published,1);
     const removed=await post('/api/factory/releases/'+id+'/delete',{confirmation:'DELETE'});assert.equal(removed.statusCode,200,removed.body);assert.equal((await q('SELECT * FROM factory_releases WHERE id=$1',[id])).rows.length,0);assert.equal((await q("SELECT * FROM factory_assets WHERE kind='audio' AND id=$1",[audio.json().id])).rows.length,1);assert.equal(deletes,4);
     assert.equal((await post('/api/factory/assets/'+audio.json().id+'/delete',{confirmation:'DELETE'})).statusCode,200);assert.equal(deletes,5);
+    const ideaId=randomUUID(),song={title:'Oath Beneath the Mountain',concept:'Two siblings return from exile and answer the call of their mountain home.',lyrics:'[Verse 1]\n'+('We carry the winter road beneath our feet\n'.repeat(12))+'[Chorus]\n'+('The mountain calls us home again\n'.repeat(8)),sunoPrompt:'Nordic cinematic hip-hop, low male rap verses, melodic female chorus, frame drums and bowed strings.',artworkPrompt:'Two original adult Vikings overlooking a stormy Nordic fjord, forest green and muted gold, cinematic realism, no text.'};
+    await q("INSERT INTO factory_song_ideas(id,channel_id,mode,brief,state,content,approved_at) VALUES($1,'veil-of-ages','viking-rap-duet','Linked test','approved',$2,NOW())",[ideaId,JSON.stringify(song)]);
+    const ideaUpload=await uploadIdea(Buffer.from('ID3-linked-approved-song-audio'),'download.mp3',ideaId);assert.equal(ideaUpload.statusCode,201,ideaUpload.body);
+    const ideaAsset=(await q('SELECT * FROM factory_assets WHERE id=$1',[ideaUpload.json().id])).rows[0] as {name:string;vocal:string;container_id:string};assert.equal(ideaAsset.name,'Oath Beneath the Mountain.mp3');assert.equal(ideaAsset.vocal,'choir');assert.equal(ideaAsset.container_id,'viking-rap-duet');
+    const linkedBefore=(await q('SELECT audio_id FROM factory_song_ideas WHERE id=$1',[ideaId])).rows[0] as {audio_id:string|null};
+    assert.equal(linkedBefore.audio_id,ideaUpload.json().id);
+    assert.equal((await post('/api/factory/assets/'+ideaUpload.json().id+'/delete',{confirmation:'DELETE'})).statusCode,200);
+    const linkedAfter=(await q('SELECT audio_id FROM factory_song_ideas WHERE id=$1',[ideaId])).rows[0] as {audio_id:string|null};
+    assert.equal(linkedAfter.audio_id,null);
     failPut=true;const failed=await upload('audio',Buffer.from('ID3-another-test-audio-more-bytes'),'Other.mp3');assert.equal(failed.statusCode,503);assert.ok(!failed.body.includes('secret'));
     assert.ok((await app.inject('/api/factory/storage')).json().reserved>0);
     failPut=false;assert.equal((await upload('audio',Buffer.from('ID3-another-test-audio-more-bytes'),'Other.mp3')).statusCode,409);

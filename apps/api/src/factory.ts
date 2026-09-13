@@ -14,6 +14,9 @@ import { factoryPage, factoryCss, factoryScript } from './factory-ui.js';
 import { factoryChannelCss } from './factory-channel-ui.js';
 import { createCloudflareImageGenerator, type ImageGenerator } from './factory-ai.js';
 import { ACTIVE_EFFECT_IDS, EFFECT_CATALOG, motionIntensitySchema } from './factory-effects.js';
+import { approveSongIdea, createSongIdea, textGeneratorConfigured } from './factory-song.js';
+import { songMode, songPackageSchema } from './factory-song-domain.js';
+import { buildYoutubeThumbnail } from './factory-thumbnail.js';
 
 const uuid=z.string().uuid();
 const vocal=z.enum(['instrumental','choir']);
@@ -40,19 +43,26 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     // No silent restart of expensive work. A retry explicitly keeps the same track and cover.
     await requirePool().query("UPDATE factory_releases SET state='failed',stage='interrupted',error='Сервер перестав передавати прогрес. Можна повторити складання з тими самими матеріалами.',updated_at=NOW() WHERE state='rendering' AND updated_at<NOW()-INTERVAL '30 minutes'");
     await requirePool().query("UPDATE factory_releases SET state='uncertain',error='Передачу перервано. Перевір YouTube Studio перед повторними діями.',updated_at=NOW() WHERE state='publishing' AND updated_at<NOW()-INTERVAL '10 minutes'");
+    await requirePool().query("UPDATE factory_song_ideas SET state='failed',error='Генерацію перервав перезапуск сервера. Запусти створення тексту ще раз.',updated_at=NOW() WHERE state='generating' AND updated_at<NOW()-INTERVAL '3 minutes'");
     const db=requirePool();
-    const [recipe,assets,releases,counts,channels,containers,channelContainers]=await Promise.all([
+    const [recipe,assets,releases,counts,channels,containers,channelContainers,ideas]=await Promise.all([
       db.query('SELECT * FROM factory_recipe WHERE id=1'),
       db.query(`SELECT a.*,c.name AS container_name FROM factory_assets a LEFT JOIN factory_containers c ON c.id=a.container_id ORDER BY a.created_at DESC LIMIT 300`),
       db.query('SELECT * FROM factory_releases ORDER BY created_at DESC LIMIT 100'),
       db.query(`SELECT cc.channel_id,a.vocal,COUNT(*) AS available FROM factory_assets a JOIN factory_channel_containers cc ON cc.container_id=a.container_id WHERE a.kind='audio' AND a.state='ready' AND NOT EXISTS(SELECT 1 FROM factory_releases r WHERE r.track_id=a.id) GROUP BY cc.channel_id,a.vocal`),
       db.query('SELECT * FROM factory_channels WHERE active=TRUE ORDER BY created_at,id'),
       db.query('SELECT * FROM factory_containers ORDER BY position,name'),
-      db.query('SELECT channel_id,container_id FROM factory_channel_containers ORDER BY channel_id,container_id')
+      db.query('SELECT channel_id,container_id FROM factory_channel_containers ORDER BY channel_id,container_id'),
+      db.query('SELECT * FROM factory_song_ideas ORDER BY created_at DESC LIMIT 20')
     ]);
     const availableByChannel:Record<string,Record<string,number>>={};for(const r of counts.rows)(availableByChannel[r.channel_id]??={})[r.vocal]=Number(r.available);
-    return {configured:!!storage,aiConfigured:!!imageGenerator,recipe:recipe.rows[0],effects:EFFECT_CATALOG,assets:assets.rows,releases:releases.rows,channels:channels.rows,containers:containers.rows,channelContainers:channelContainers.rows,availableByChannel,availableByVocal:Object.fromEntries(counts.rows.filter(r=>r.channel_id==='veil-of-ages').map(r=>[r.vocal,Number(r.available)])),limit:STORAGE_LIMIT,inputLimit:INPUT_LIMIT};
+    return {configured:!!storage,aiConfigured:!!imageGenerator,textAiConfigured:textGeneratorConfigured(),recipe:recipe.rows[0],effects:EFFECT_CATALOG,assets:assets.rows,releases:releases.rows,ideas:ideas.rows,channels:channels.rows,containers:containers.rows,channelContainers:channelContainers.rows,availableByChannel,availableByVocal:Object.fromEntries(counts.rows.filter(r=>r.channel_id==='veil-of-ages').map(r=>[r.vocal,Number(r.available)])),limit:STORAGE_LIMIT,inputLimit:INPUT_LIMIT};
   });
+  app.post('/api/factory/ideas',{bodyLimit:5000,logLevel:'silent'},async req=>{
+    const body=z.object({channelId:containerId.default('veil-of-ages'),mode:songMode,brief:z.string().trim().max(3000).default('')}).strict().parse(req.body);
+    return createSongIdea(body.channelId,body.mode,body.brief,AbortSignal.timeout(90000));
+  });
+  app.post('/api/factory/ideas/:id/approve',async req=>approveSongIdea(uuid.parse((req.params as {id:string}).id)));
   app.get('/api/factory/storage',async()=>{
     const s=needStorage();
     return factoryLock(async db=>{
@@ -71,7 +81,15 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     const s=needStorage();if(uploading)throw new FactoryError(429,'Дочекайся завершення поточного файла.');uploading=true;
     let dir:string|undefined;
     try{
-      const meta=z.object({kind:z.enum(['audio','image']),vocal:vocal.default('instrumental'),containerId:containerId.default('viking-anthem'),theme:z.string().trim().max(500).default('')}).parse(req.query);
+      const requested=z.object({kind:z.enum(['audio','image']),vocal:vocal.default('instrumental'),containerId:containerId.default('viking-anthem'),theme:z.string().trim().max(500).default(''),ideaId:uuid.optional()}).parse(req.query);
+      let meta:{kind:'audio'|'image';vocal:'instrumental'|'choir';containerId:string;theme:string}=requested;
+      let idea:{id:string;mode:'viking-anthem'|'viking-rap-duet';content:unknown;audio_id:string|null}|null=null;
+      if(requested.ideaId){
+        if(requested.kind!=='audio')throw new FactoryError(400,'До задуму можна прикріпити лише готову пісню.');
+        idea=(await requirePool().query("SELECT id,mode,content,audio_id FROM factory_song_ideas WHERE id=$1 AND state='approved'",[requested.ideaId])).rows[0]||null;
+        if(!idea)throw new FactoryError(409,'Спочатку затвердь назву та слова.');if(idea.audio_id)throw new FactoryError(409,'До цього задуму вже додано готову пісню.');
+        const content=songPackageSchema.parse(idea.content);meta={kind:'audio',vocal:'choir',containerId:idea.mode,theme:content.concept.slice(0,500)};
+      }
       const part=await req.file();if(!part)throw new FactoryError(400,'Обери файл.');
       const data=await part.toBuffer();if(part.file.truncated||data.length>UPLOAD_MAX||data.length<16)throw new FactoryError(400,'Файл має бути до 25 МіБ.');
       const kind=mediaKind(data.subarray(0,16),meta.kind==='image');
@@ -86,11 +104,14 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
       if(meta.kind==='audio'&&!(await requirePool().query('SELECT id FROM factory_containers WHERE id=$1',[meta.containerId])).rowCount)throw new FactoryError(400,'Обраний жанровий контейнер не існує.');
       const type=meta.kind==='audio'?(kind==='mp3'?'audio/mpeg':'audio/wav'):(kind==='png'?'image/png':'image/jpeg');
       const originalName=part.filename.replace(/[<>\x00-\x1f]/g,'').slice(0,150)||'Без назви';
-      const {asset,fresh}=await reserveAsset(s,{...meta,hash:createHash('sha256').update(data).digest('hex'),name:originalName,bytes:data.length,type,duration});
-      if(!fresh){if(asset.state!=='ready')throw new FactoryError(409,'Попереднє збереження цього файла не підтверджене. Він утримує резерв місця; перевір R2 перед повтором.');return {id:asset.id,duplicate:true};}
+      const content=idea?songPackageSchema.parse(idea.content):null;
+      const savedName=content?content.title.replace(/[<>\x00-\x1f]/g,'').slice(0,135)+(kind==='mp3'?'.mp3':'.wav'):originalName;
+      const {asset,fresh}=await reserveAsset(s,{...meta,hash:createHash('sha256').update(data).digest('hex'),name:savedName,bytes:data.length,type,duration});
+      if(!fresh){if(asset.state!=='ready')throw new FactoryError(409,'Попереднє збереження цього файла не підтверджене. Він утримує резерв місця; перевір R2 перед повтором.');if(idea){if((await requirePool().query('SELECT id FROM factory_song_ideas WHERE audio_id=$1',[asset.id])).rowCount||(await requirePool().query('SELECT id FROM factory_releases WHERE track_id=$1',[asset.id])).rowCount)throw new FactoryError(409,'Цей аудіофайл уже належить іншому запуску.');await requirePool().query('UPDATE factory_song_ideas SET audio_id=$2,updated_at=NOW() WHERE id=$1',[idea.id,asset.id]);}return {id:asset.id,duplicate:true,ideaId:idea?.id||null};}
       try{await s.put(asset.object_key,data,type);await requirePool().query("UPDATE factory_assets SET state='ready' WHERE id=$1",[asset.id]);}
       catch(e){await requirePool().query("UPDATE factory_assets SET state='uncertain' WHERE id=$1",[asset.id]).catch(()=>{});throw e;}
-      return reply.code(201).send({id:asset.id,duplicate:false,containerId:asset.container_id});
+      if(idea)await requirePool().query('UPDATE factory_song_ideas SET audio_id=$2,updated_at=NOW() WHERE id=$1',[idea.id,asset.id]);
+      return reply.code(201).send({id:asset.id,duplicate:false,containerId:asset.container_id,ideaId:idea?.id||null});
     }finally{uploading=false;if(dir)await rm(dir,{recursive:true,force:true});}
   });
   app.get('/api/factory/assets/:id/file',{logLevel:'silent'},async(req,reply)=>{
@@ -98,6 +119,14 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     if(!a)throw new FactoryError(404,'Файл ще не готовий.');
     const data=await needStorage().get(a.object_key,a.kind==='video'?MAX_OUTPUT_BYTES:UPLOAD_MAX);
     return reply.type(a.type).header('Content-Disposition','inline').send(data);
+  });
+  app.get('/api/factory/releases/:id/thumbnail',{logLevel:'silent'},async(req,reply)=>{
+    const id=uuid.parse((req.params as {id:string}).id),release=(await requirePool().query('SELECT id,title,cover_id FROM factory_releases WHERE id=$1',[id])).rows[0];
+    if(!release)throw new FactoryError(404,'Випуск не знайдено.');
+    const cover=(await requirePool().query("SELECT object_key FROM factory_assets WHERE id=$1 AND kind='image' AND state='ready'",[release.cover_id])).rows[0];
+    if(!cover)throw new FactoryError(409,'Обкладинка ще створюється.');
+    const thumbnail=await buildYoutubeThumbnail(await needStorage().get(cover.object_key,8*1024*1024),release.title);
+    return reply.type('image/jpeg').header('Content-Disposition','inline').send(thumbnail);
   });
   const deleteConfirmation=z.object({confirmation:z.literal('DELETE')}).strict();
   const checkedKey=(asset:{id:string;object_key:string})=>{
@@ -115,7 +144,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
       if(!asset)throw new FactoryError(404,'Матеріал уже видалено.');
       if((await db.query('SELECT id FROM factory_releases WHERE track_id=$1 OR cover_id=$1 OR output_id=$1 LIMIT 1',[id])).rowCount||(await db.query('SELECT release_id FROM factory_release_scenes WHERE asset_id=$1 LIMIT 1',[id])).rowCount)throw new FactoryError(409,'Матеріал використовується у випуску. Спочатку видали відповідний випуск.');
       if((await db.query('SELECT id FROM factory_recipe WHERE cover_id=$1',[id])).rowCount)throw new FactoryError(409,'Цю картинку обрано в рецепті. Спочатку зміни резервну обкладинку в налаштуваннях.');
-      await deleteStored(s,asset);await db.query('DELETE FROM factory_assets WHERE id=$1',[id]);
+      await deleteStored(s,asset);await db.query('UPDATE factory_song_ideas SET audio_id=NULL,updated_at=NOW() WHERE audio_id=$1',[id]);await db.query('DELETE FROM factory_assets WHERE id=$1',[id]);
       return {deleted:true,freed:Number(asset.bytes)};
     });
   });
@@ -210,9 +239,9 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     })();tasks.add(task);void task.finally(()=>tasks.delete(task));
   }
   app.post('/api/factory/releases',async(req,reply)=>{
-    const {requestKey,channelId}=z.object({requestKey:uuid,channelId:containerId.default('veil-of-ages')}).strict().parse(req.body);
+    const {requestKey,channelId,ideaId}=z.object({requestKey:uuid,channelId:containerId.default('veil-of-ages'),ideaId:uuid.optional()}).strict().parse(req.body);
     const s=needStorage();if(!options.render)await checkMediaTools();
-    const {release,fresh}=await startRelease(s,requestKey,!!imageGenerator,channelId);if(fresh)work(release);
+    const {release,fresh}=await startRelease(s,requestKey,!!imageGenerator,channelId,ideaId);if(fresh)work(release);
     return reply.code(fresh?202:200).send({id:release.id,state:release.state});
   });
   app.post('/api/factory/releases/:id/retry',async(req,reply)=>{
@@ -237,8 +266,9 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
       try{
         const cover=(await requirePool().query("SELECT * FROM factory_assets WHERE id=$1 AND kind='image' AND state='ready'",[release.cover_id])).rows[0];
         if(!cover)throw Error('Missing cover');
-        const thumbnail=await needStorage().get(cover.object_key,2*1024*1024);
-        const thumbnailResult=await app.inject({method:'POST',url:'/youtube/thumbnail?'+new URLSearchParams({videoId:data.videoId}),headers:{cookie:req.headers.cookie??'',origin:ownerOrigin(),'content-type':cover.type},payload:thumbnail});
+        const source=await needStorage().get(cover.object_key,8*1024*1024);
+        const thumbnail=await buildYoutubeThumbnail(source,release.title);
+        const thumbnailResult=await app.inject({method:'POST',url:'/youtube/thumbnail?'+new URLSearchParams({videoId:data.videoId}),headers:{cookie:req.headers.cookie??'',origin:ownerOrigin(),'content-type':'image/jpeg'},payload:thumbnail});
         if(thumbnailResult.statusCode!==200)throw Error('Thumbnail rejected');
       }catch{thumbnailWarning='Відео завантажено приватно, але власну мініатюру не підтверджено. Додай її вручну в YouTube Studio.';}
       await requirePool().query("UPDATE factory_releases SET state='private',video_id=$2,error=$3,updated_at=NOW() WHERE id=$1",[id,data.videoId,thumbnailWarning]);return {videoId:data.videoId,thumbnailSet:!thumbnailWarning,warning:thumbnailWarning};

@@ -69,6 +69,8 @@ export async function migrate(): Promise<void> {
   `);
   const { factoryMigration } = await import('./factory-store.js');
   await pool.query(factoryMigration);
+  const { factorySongMigration } = await import('./factory-song.js');
+  await pool.query(factorySongMigration);
 }
 
 export function requirePool(): pg.Pool {

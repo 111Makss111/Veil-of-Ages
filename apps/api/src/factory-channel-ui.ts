@@ -163,8 +163,36 @@ export const factoryChannelCss = `
   margin: 16px 0 4px;
 }
 
+textarea {
+  display: block;
+  width: 100%;
+  resize: vertical;
+  font: inherit;
+  line-height: 1.55;
+  color: #e4eddd;
+  background: #09140d;
+  border: 1px solid #c2d8a832;
+  border-radius: 9px;
+  padding: 13px;
+  margin-top: 9px;
+}
+
+.steps-six { grid-template-columns: repeat(6, 1fr); }
+.idea-form, .idea-workspace { max-width: 1040px; }
+.idea-workspace h2 { font: 500 clamp(27px, 4vw, 42px) Georgia, serif; color: #eaf4e3; margin-bottom: 8px; }
+.idea-workspace h3 { margin: 22px 0 8px; color: #dcebd2; }
+.idea-copy { white-space: pre-wrap; max-height: 360px; overflow: auto; padding: 18px; border-radius: 11px; background: #08120c; border: 1px solid #c2e59f1c; color: #bccdb2; line-height: 1.65; }
+.idea-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+.idea-upload { padding-top: 18px; margin-top: 20px; border-top: 1px solid #c6eba71d; }
+.idea-upload input { max-width: 560px; }
+.release-thumbnail { display:block; width:min(100%,640px); aspect-ratio:16/9; object-fit:cover; margin:18px 0 5px; border-radius:10px; border:1px solid #c6eba724; }
+.batch-launch { max-width: 1040px; }
+.batch-launch > summary { color: #a8bb9e; }
+.batch-launch .hero { margin-bottom: 0; }
+
 @media (max-width: 650px) {
   .channel-dialog-shell { padding: 14px; }
   .container-choices { grid-template-columns: 1fr; }
+  .steps-six { grid-template-columns: 1fr 1fr; }
 }
 `;
