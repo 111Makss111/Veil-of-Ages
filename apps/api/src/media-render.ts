@@ -9,7 +9,7 @@ export function shortsClip(duration:number){const length=Math.min(SHORTS_DURATIO
 export type CinematicPreset = 'ancient-mist' | 'ember-glow' | 'moonlit-ruins';
 export type MediaProgress = { percent: number; seconds: number; duration: number };
 export class MediaToolError extends Error {
-  constructor(public reason: 'timeout'|'aborted'|'spawn'|'exit'|'output') {
+  constructor(public reason: 'timeout'|'stalled'|'aborted'|'spawn'|'exit'|'output') {
     super('Не вдалося обробити медіа: перевірте файл, FFmpeg або обмеження часу.');
   }
 }
@@ -24,16 +24,20 @@ export function mediaKind(header: Buffer, image: boolean): string {
   throw new Error(image ? 'Потрібне зображення JPG або PNG.' : 'Потрібне аудіо MP3 або WAV.');
 }
 
-export function runMediaTool(binary: string, args: string[], timeout: number, signal?: AbortSignal, onStdout?: (chunk: string) => void): Promise<string> {
+export function runMediaTool(binary: string, args: string[], timeout: number, signal?: AbortSignal, onStdout?: (chunk: string) => void, inactivityTimeout=0): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(binary, args, { shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '', reason: MediaToolError['reason']|undefined;
     const kill = (why: MediaToolError['reason']) => { if (!reason) reason = why; child.kill('SIGKILL'); };
     const timer = setTimeout(() => kill('timeout'), timeout);
+    let inactivityTimer:NodeJS.Timeout|undefined;
+    const expectProgress=()=>{if(!inactivityTimeout)return;if(inactivityTimer)clearTimeout(inactivityTimer);inactivityTimer=setTimeout(()=>kill('stalled'),inactivityTimeout);};
+    expectProgress();
     const abort = () => kill('aborted');
     signal?.addEventListener('abort', abort, { once: true });
     if (signal?.aborted) abort();
     child.stdout.on('data', chunk => {
+      expectProgress();
       const text = chunk.toString();
       if (onStdout) onStdout(text);
       else { output += text; if (output.length > 1024 * 1024) kill('output'); }
@@ -41,7 +45,7 @@ export function runMediaTool(binary: string, args: string[], timeout: number, si
     child.stderr.on('data', () => {}); // Never expose local paths or media metadata in logs.
     child.once('error', () => { reason = 'spawn'; });
     child.once('close', code => {
-      clearTimeout(timer); signal?.removeEventListener('abort', abort);
+      clearTimeout(timer);if(inactivityTimer)clearTimeout(inactivityTimer); signal?.removeEventListener('abort', abort);
       if (reason || code !== 0) reject(new MediaToolError(reason ?? 'exit'));
       else resolve(output);
     });
@@ -163,7 +167,7 @@ export async function renderMedia(image: string|string[], audio: string, output:
     '-c:v', 'libx264', '-threads', '2', '-preset', 'superfast', '-crf', '22', '-maxrate', '900k', '-bufsize', '1800k', '-pix_fmt', 'yuv420p',
     '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-t', String(renderDuration), '-shortest', '-fs', String(MAX_OUTPUT_BYTES), '-movflags', '+faststart',
     '-progress','pipe:1','-nostats',output
-  ], 90 * 60 * 1000, signal, parseProgress);
+  ], 90 * 60 * 1000, signal, parseProgress,5*60*1000);
   const result = JSON.parse(await runMediaTool(probe, [...common, '-show_entries', 'format=duration:stream=codec_type,width,height', '-of', 'json', output], 15000, signal));
   const size = (await stat(output)).size;
   const outputDuration = Number(result.format?.duration);

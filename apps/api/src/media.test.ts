@@ -28,6 +28,10 @@ test('media tool reports a safe timeout reason', async () => {
   await assert.rejects(runMediaTool(process.execPath, ['-e','setTimeout(()=>{},1000)'], 20), error => error instanceof MediaToolError && error.reason === 'timeout');
 });
 
+test('media tool stops a process that stays alive without progress',async()=>{
+  await assert.rejects(runMediaTool(process.execPath,['-e','setTimeout(()=>{},1000)'],1000,undefined,undefined,20),error=>error instanceof MediaToolError&&error.reason==='stalled');
+});
+
 test('cinematic presets build bounded video and audio filter graphs', () => {
   for (const preset of ['ancient-mist','ember-glow','moonlit-ruins'] as const) {
     const filters = buildCinematicFilters(1280, 720, 120, preset);

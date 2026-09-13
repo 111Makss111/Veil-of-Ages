@@ -251,7 +251,8 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
         if(stage==='generating-image')return error instanceof Error&&/^(OpenAI|Workers AI|Генерац)/.test(error.message)?error.message:'Генератор не завершив створення обкладинки. Перевір доступ до OpenAI та повтори з тією самою концепцією.';
         if(stage==='downloading')return 'Не вдалося отримати матеріали з R2. Перевір підключення сховища та повтори.';
         if(stage==='saving-cover'||stage==='uploading')return 'R2 не підтвердив збереження файла. Перевір сховище перед повтором.';
-        if(stage==='rendering'&&error instanceof MediaToolError&&error.reason==='timeout')return 'Монтаж не вклався у 90 хвилин. Трек і обкладинка збережені; повтор використає ті самі матеріали.';
+      if(stage==='rendering'&&error instanceof MediaToolError&&error.reason==='timeout')return 'Монтаж не вклався у 90 хвилин. Трек і обкладинка збережені; повтор використає ті самі матеріали.';
+      if(stage==='rendering'&&error instanceof MediaToolError&&error.reason==='stalled')return 'FFmpeg не передавав нового прогресу понад 5 хвилин, тому завислий монтаж безпечно зупинено. Повтор використає один образ і ті самі матеріали.';
         if(stage==='rendering'&&error instanceof MediaToolError&&error.reason==='aborted')return 'Монтаж перервано зупинкою або перезапуском сервера. Можна повторити з тими самими матеріалами.';
         if(stage==='rendering'&&error instanceof MediaToolError&&error.reason==='spawn')return 'FFmpeg не запустився на сервері. Потрібно перевірити інструменти Render.';
         if(stage==='rendering')return 'FFmpeg зупинив монтаж. Трек і обкладинка збережені; повтор використає ті самі матеріали.';
@@ -264,6 +265,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
         const track=await get(release.track_id),output=await get(release.output_id);
         let scenes=(await requirePool().query(`SELECT s.position,s.label,s.prompt,s.seed,a.id AS asset_id,a.object_key,a.state,a.type FROM factory_release_scenes s JOIN factory_assets a ON a.id=s.asset_id WHERE s.release_id=$1 ORDER BY s.position`,[release.id])).rows;
         if(!scenes.length){const cover=await get(release.cover_id);scenes=[{position:0,label:'Єдина сцена',prompt:release.recipe.prompt,seed:release.recipe.seed,asset_id:cover.id,object_key:cover.object_key,state:cover.state,type:cover.type}];}
+        scenes=scenes.slice(0,Math.max(1,Math.min(3,Number(release.recipe?.productionPlan?.sceneCount)||1)));
         const audio=join(workDir,'audio'),images=scenes.map((_scene,index)=>join(workDir,`scene-${index}`)),video=join(workDir,'video.mp4');
         await update('downloading',7,'Отримуємо музику з приватного сховища R2.',true);
         await writeFile(audio,await s.get(track.object_key,UPLOAD_MAX));
@@ -315,7 +317,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     needStorage();const id=uuid.parse((req.params as {id:string}).id);
     const release=await factoryLock(async db=>{
       if((await db.query("SELECT id FROM factory_releases WHERE state='rendering' OR short_state='rendering'")).rowCount)throw new FactoryError(409,'Лінія зайнята.');
-      const r=(await db.query("UPDATE factory_releases SET state='rendering',stage='preparing',progress=2,progress_detail='Готуємо безпечний повтор із тими самими матеріалами.',error=NULL,started_at=NOW(),render_started_at=NULL,processed_seconds=NULL,render_duration=NULL,updated_at=NOW() WHERE id=$1 AND state='failed' RETURNING *",[id])).rows[0];
+      const r=(await db.query("UPDATE factory_releases SET state='rendering',stage='preparing',progress=2,progress_detail='Готуємо полегшений повтор з одним образом і тими самими матеріалами.',recipe=jsonb_set(recipe,'{productionPlan,sceneCount}','1'::jsonb,true),error=NULL,started_at=NOW(),render_started_at=NULL,processed_seconds=NULL,render_duration=NULL,updated_at=NOW() WHERE id=$1 AND state='failed' RETURNING *",[id])).rows[0];
       if(!r)throw new FactoryError(409,'Повтор доступний лише для невдалого складання.');return r;
     });work(release);return reply.code(202).send({id});
   });
