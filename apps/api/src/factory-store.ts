@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS factory_releases (
  started_at TIMESTAMPTZ, render_started_at TIMESTAMPTZ, processed_seconds DOUBLE PRECISION, render_duration DOUBLE PRECISION,
  short_output_id UUID REFERENCES factory_assets(id), short_state TEXT CHECK(short_state IN ('rendering','review','failed')),
  short_error TEXT, short_progress INTEGER NOT NULL DEFAULT 0, short_started_at TIMESTAMPTZ, short_updated_at TIMESTAMPTZ,
+ short_publish_state TEXT CHECK(short_publish_state IN ('publishing','private','uncertain')), short_video_id TEXT, short_publish_error TEXT,
  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ALTER TABLE factory_releases ALTER COLUMN cover_id DROP NOT NULL;
@@ -99,6 +100,9 @@ ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_error TEXT;
 ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_progress INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_started_at TIMESTAMPTZ;
 ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_updated_at TIMESTAMPTZ;
+ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_publish_state TEXT CHECK(short_publish_state IN ('publishing','private','uncertain'));
+ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_video_id TEXT;
+ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_publish_error TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS factory_one_render ON factory_releases((true)) WHERE state='rendering';
 CREATE TABLE IF NOT EXISTS factory_release_scenes (
  release_id UUID NOT NULL REFERENCES factory_releases(id) ON DELETE CASCADE,

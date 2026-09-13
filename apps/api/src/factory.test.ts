@@ -22,6 +22,8 @@ test('factory browser script parses and storage fails closed without configurati
   assert.match(factoryScript,/video\.poster=thumbnailUrl/);
   assert.match(factoryScript,/Повторити встановлення обкладинки/);
   assert.match(factoryScript,/Створити Shorts на 30 секунд/);
+  assert.match(factoryScript,/Опублікувати саме Shorts/);
+  assert.match(factoryScript,/Завантажити повне відео приватно на YouTube/);
   assert.match(factoryScript,/form\.hidden=!!active/);
   assert.match(factoryScript,/Копіювати назву/);
   assert.match(factoryScript,/Монтувати відео/);
@@ -80,7 +82,7 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
   const headers={origin:'https://api.example.test'};
   const post=(url:string,payload:Record<string,unknown>)=>app.inject({method:'POST',url,headers,payload});
   const upload=(kind:string,body:Buffer,name:string)=>app.inject({method:'POST',url:'/api/factory/assets?kind='+kind+'&vocal=instrumental',headers:{...headers,'content-type':'multipart/form-data; boundary=testboundary'},payload:Buffer.concat([Buffer.from('--testboundary\r\nContent-Disposition: form-data; name="file"; filename="'+name+'"\r\nContent-Type: application/octet-stream\r\n\r\n'),body,Buffer.from('\r\n--testboundary--\r\n')])});
-  const uploadIdea=(body:Buffer,name:string,ideaId:string)=>app.inject({method:'POST',url:'/api/factory/assets?kind=audio&ideaId='+ideaId,headers:{...headers,'content-type':'multipart/form-data; boundary=testboundary'},payload:Buffer.concat([Buffer.from('--testboundary\r\nContent-Disposition: form-data; name="file"; filename="'+name+'"\r\nContent-Type: application/octet-stream\r\n\r\n'),body,Buffer.from('\r\n--testboundary--\r\n')])});
+  const uploadIdea=(body:Buffer,name:string,ideaId:string,theme='')=>app.inject({method:'POST',url:'/api/factory/assets?kind=audio&ideaId='+ideaId+'&theme='+encodeURIComponent(theme),headers:{...headers,'content-type':'multipart/form-data; boundary=testboundary'},payload:Buffer.concat([Buffer.from('--testboundary\r\nContent-Disposition: form-data; name="file"; filename="'+name+'"\r\nContent-Type: application/octet-stream\r\n\r\n'),body,Buffer.from('\r\n--testboundary--\r\n')])});
   const waitState=async(id:string,state:string)=>{for(let i=0;i<100;i++){const r=(await q('SELECT * FROM factory_releases WHERE id=$1',[id])).rows[0] as {state:string};if(r.state===state)return;await new Promise(r=>setTimeout(r,10));}assert.fail('Expected '+state);};
   try{
     await db.exec(factoryMigration);await db.exec(factorySongMigration);
@@ -124,12 +126,15 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
     const shortsStart=await post('/api/factory/releases/'+id+'/shorts',{});assert.equal(shortsStart.statusCode,202,shortsStart.body);
     for(let i=0;i<100;i++){const row=(await q('SELECT short_state,short_output_id FROM factory_releases WHERE id=$1',[id])).rows[0] as {short_state:string;short_output_id:string};if(row.short_state==='review'){assert.equal((await app.inject('/api/factory/assets/'+row.short_output_id+'/file')).statusCode,200);const poster=await app.inject('/api/factory/releases/'+id+'/shorts-poster');assert.equal(poster.statusCode,200);assert.equal((await sharp(poster.rawPayload).metadata()).height,1280);break;}if(i===99)assert.fail('Expected Shorts review state');await new Promise(resolve=>setTimeout(resolve,10));}
     assert.equal(renderFormats.at(-1),'shorts');assert.equal(renderSceneCounts.at(-1),1);
-    assert.equal((await post('/api/factory/releases/'+id+'/publish',{children:'no',synthetic:'yes',rights:true})).statusCode,409);assert.equal(published,1);
+    assert.equal((await post('/api/factory/releases/'+id+'/publish-short',{children:'no',synthetic:'yes',rights:false})).statusCode,400);assert.equal(published,1);
+    const shortPublish=await post('/api/factory/releases/'+id+'/publish-short',{children:'no',synthetic:'yes',rights:true});assert.equal(shortPublish.statusCode,200,shortPublish.body);assert.equal(published,2);assert.equal(shortPublish.json().videoId,'abcdefghijk');
+    const shortPublished=(await q('SELECT short_publish_state,short_video_id FROM factory_releases WHERE id=$1',[id])).rows[0] as {short_publish_state:string;short_video_id:string};assert.equal(shortPublished.short_publish_state,'private');assert.equal(shortPublished.short_video_id,'abcdefghijk');
+    assert.equal((await post('/api/factory/releases/'+id+'/publish',{children:'no',synthetic:'yes',rights:true})).statusCode,409);assert.equal(published,2);
     const removed=await post('/api/factory/releases/'+id+'/delete',{confirmation:'DELETE'});assert.equal(removed.statusCode,200,removed.body);assert.equal((await q('SELECT * FROM factory_releases WHERE id=$1',[id])).rows.length,0);assert.equal((await q("SELECT * FROM factory_assets WHERE kind='audio' AND id=$1",[audio.json().id])).rows.length,1);assert.equal(deletes,3);
     assert.equal((await post('/api/factory/assets/'+audio.json().id+'/delete',{confirmation:'DELETE'})).statusCode,200);assert.equal(deletes,4);
     const ideaId=randomUUID(),song={title:'Oath Beneath the Mountain',concept:'Two siblings return from exile and answer the call of their mountain home.',lyrics:'[Verse 1]\n'+('We carry the winter road beneath our feet\n'.repeat(12))+'[Chorus]\n'+('The mountain calls us home again\n'.repeat(8)),sunoPrompt:'Nordic cinematic hip-hop, low male rap verses, melodic female chorus, frame drums and bowed strings.',artworkPrompt:'Two original adult Vikings overlooking a stormy Nordic fjord, forest green and muted gold, cinematic realism, no text.'};
     await q("INSERT INTO factory_song_ideas(id,channel_id,mode,brief,state,content,approved_at) VALUES($1,'veil-of-ages','viking-rap-duet','Linked test','approved',$2,NOW())",[ideaId,JSON.stringify(song)]);
-    const ideaUpload=await uploadIdea(Buffer.from('ID3-linked-approved-song-audio'),'download.mp3',ideaId);assert.equal(ideaUpload.statusCode,201,ideaUpload.body);
+    const ideaUpload=await uploadIdea(Buffer.from('ID3-linked-approved-song-audio'),'download.mp3',ideaId,'Old browser description '.repeat(30));assert.equal(ideaUpload.statusCode,201,ideaUpload.body);
     const ideaAsset=(await q('SELECT * FROM factory_assets WHERE id=$1',[ideaUpload.json().id])).rows[0] as {name:string;vocal:string;container_id:string};assert.equal(ideaAsset.name,'Oath Beneath the Mountain.mp3');assert.equal(ideaAsset.vocal,'choir');assert.equal(ideaAsset.container_id,'viking-rap-duet');
     const linkedBefore=(await q('SELECT audio_id FROM factory_song_ideas WHERE id=$1',[ideaId])).rows[0] as {audio_id:string|null};
     assert.equal(linkedBefore.audio_id,ideaUpload.json().id);

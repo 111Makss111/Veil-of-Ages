@@ -45,6 +45,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     // No silent restart of expensive work. A retry explicitly keeps the same track and cover.
     await requirePool().query("UPDATE factory_releases SET state='failed',stage='interrupted',error='Сервер перестав передавати прогрес. Можна повторити складання з тими самими матеріалами.',updated_at=NOW() WHERE state='rendering' AND updated_at<NOW()-INTERVAL '30 minutes'");
     await requirePool().query("UPDATE factory_releases SET state='uncertain',error='Передачу перервано. Перевір YouTube Studio перед повторними діями.',updated_at=NOW() WHERE state='publishing' AND updated_at<NOW()-INTERVAL '10 minutes'");
+    await requirePool().query("UPDATE factory_releases SET short_publish_state='uncertain',short_publish_error='Передачу Shorts перервано. Перевір YouTube Studio перед повторними діями.',updated_at=NOW() WHERE short_publish_state='publishing' AND updated_at<NOW()-INTERVAL '10 minutes'");
     await requirePool().query("UPDATE factory_releases SET short_state='failed',short_error='Створення Shorts перервав перезапуск сервера. Можна безпечно повторити.',short_updated_at=NOW() WHERE short_state='rendering' AND short_updated_at<NOW()-INTERVAL '30 minutes'");
     await requirePool().query("UPDATE factory_song_ideas SET state='failed',error='Генерацію перервав перезапуск сервера. Запусти створення тексту ще раз.',updated_at=NOW() WHERE state='generating' AND updated_at<NOW()-INTERVAL '3 minutes'");
     const db=requirePool();
@@ -84,8 +85,8 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     const s=needStorage();if(uploading)throw new FactoryError(429,'Дочекайся завершення поточного файла.');uploading=true;
     let dir:string|undefined;
     try{
-      const requested=z.object({kind:z.enum(['audio','image']),vocal:vocal.default('instrumental'),containerId:containerId.default('viking-anthem'),theme:z.string().trim().max(500).default(''),ideaId:uuid.optional()}).parse(req.query);
-      let meta:{kind:'audio'|'image';vocal:'instrumental'|'choir';containerId:string;theme:string}=requested;
+      const requested=z.object({kind:z.enum(['audio','image']),vocal:vocal.default('instrumental'),containerId:containerId.default('viking-anthem'),theme:z.string().trim().max(2000).default(''),ideaId:uuid.optional()}).parse(req.query);
+      let meta:{kind:'audio'|'image';vocal:'instrumental'|'choir';containerId:string;theme:string}={...requested,theme:requested.theme.slice(0,500)};
       let idea:{id:string;mode:'viking-anthem'|'viking-rap-duet';content:unknown;audio_id:string|null}|null=null;
       if(requested.ideaId){
         if(requested.kind!=='audio')throw new FactoryError(400,'До задуму можна прикріпити лише готову пісню.');
@@ -192,7 +193,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     return factoryLock(async db=>{
       const release=(await db.query('SELECT * FROM factory_releases WHERE id=$1 FOR UPDATE',[id])).rows[0];
       if(!release)throw new FactoryError(404,'Випуск уже видалено.');
-      if(['rendering','publishing','uncertain'].includes(release.state)||release.short_state==='rendering')throw new FactoryError(409,'Цей випуск зараз не можна безпечно видалити. Дочекайся завершення або перевір результат передачі.');
+      if(['rendering','publishing','uncertain'].includes(release.state)||release.short_state==='rendering'||['publishing','uncertain'].includes(release.short_publish_state))throw new FactoryError(409,'Цей випуск зараз не можна безпечно видалити. Дочекайся завершення або перевір результат передачі.');
       const output=(await db.query('SELECT * FROM factory_assets WHERE id=$1',[release.output_id])).rows[0];
       const shortOutput=release.short_output_id?(await db.query('SELECT * FROM factory_assets WHERE id=$1',[release.short_output_id])).rows[0]:null;
       const generated=release.recipe?.coverMode==='ai';
@@ -361,6 +362,27 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     }catch{
       await requirePool().query("UPDATE factory_releases SET state='uncertain',error='Передачу не підтверджено. Перевір YouTube Studio; автоматичний повтор заблоковано.',updated_at=NOW() WHERE id=$1",[id]);
       return reply.code(502).send({error:'Перевір YouTube Studio перед повторними діями. Результат передачі невідомий.'});
+    }
+  });
+  app.post('/api/factory/releases/:id/publish-short',{logLevel:'silent'},async(req,reply)=>{
+    const id=uuid.parse((req.params as {id:string}).id);
+    const meta=z.object({children:z.enum(['yes','no']),synthetic:z.enum(['yes','no']),rights:z.literal(true)}).strict().parse(req.body);
+    const release=(await requirePool().query("UPDATE factory_releases SET short_publish_state='publishing',short_publish_error=NULL,updated_at=NOW() WHERE id=$1 AND state IN ('review','private') AND short_state='review' AND short_output_id IS NOT NULL AND short_publish_state IS NULL RETURNING *",[id])).rows[0];
+    if(!release)throw new FactoryError(409,'Shorts не готовий або вже передавався. Не повторюй невідоме завантаження без перевірки YouTube.');
+    try{
+      const asset=(await requirePool().query("SELECT * FROM factory_assets WHERE id=$1 AND kind='video' AND state='ready'",[release.short_output_id])).rows[0];
+      if(!asset)throw Error('Shorts asset not ready');
+      const file=await needStorage().get(asset.object_key,MAX_OUTPUT_BYTES);
+      const tags=Array.isArray(release.recipe?.youtubeTags)?[...release.recipe.youtubeTags,'Shorts'].join(','):'Viking music,Veil of Ages,Shorts';
+      const description=String(release.recipe?.youtubeDescription||'Original Viking song from Veil of Ages.')+'\n\nListen to the full song on Veil of Ages. #Shorts';
+      const title=(release.title+' | Viking Song #Shorts').slice(0,100);
+      const result=await app.inject({method:'POST',url:'/youtube/upload?'+new URLSearchParams({title,children:meta.children,synthetic:meta.synthetic,description,tags}),headers:{cookie:req.headers.cookie??'',origin:ownerOrigin(),'content-type':'video/mp4'},payload:file});
+      const data=result.json();if(result.statusCode!==200||!data.videoId)throw Error('Shorts upload not confirmed');
+      await requirePool().query("UPDATE factory_releases SET short_publish_state='private',short_video_id=$2,short_publish_error=NULL,updated_at=NOW() WHERE id=$1",[id,data.videoId]);
+      return {videoId:data.videoId};
+    }catch{
+      await requirePool().query("UPDATE factory_releases SET short_publish_state='uncertain',short_publish_error='Передачу Shorts не підтверджено. Перевір YouTube Studio; автоматичний повтор заблоковано.',updated_at=NOW() WHERE id=$1",[id]);
+      return reply.code(502).send({error:'Перевір YouTube Studio: результат передачі Shorts невідомий.'});
     }
   });
 }
