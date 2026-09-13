@@ -4,6 +4,8 @@ import { ACTIVE_EFFECT_IDS, motionProfiles, type FactoryEffectId, type MotionInt
 
 export const MAX_DURATION = 300;
 export const MAX_OUTPUT_BYTES = 47 * 1024 * 1024;
+export const SHORTS_DURATION = 30;
+export function shortsClip(duration:number){const length=Math.min(SHORTS_DURATION,duration);return {start:duration<=length?0:Math.min(duration-length,Math.max(0,duration*.55-length/2)),duration:length};}
 export type CinematicPreset = 'ancient-mist' | 'ember-glow' | 'moonlit-ruins';
 export type MediaProgress = { percent: number; seconds: number; duration: number };
 export class MediaToolError extends Error {
@@ -140,7 +142,8 @@ export async function renderMedia(image: string|string[], audio: string, output:
   if (!Number.isFinite(duration) || duration < 1 || duration > MAX_DURATION || !sound.streams?.some((s: { codec_type: string }) => s.codec_type === 'audio')) throw new Error('Аудіо має тривати від 1 секунди до 5 хвилин.');
   const targetWidth = format === 'shorts' ? 720 : 1280;
   const targetHeight = format === 'shorts' ? 1280 : 720;
-  const renderDuration = format === 'shorts' ? Math.min(duration, 60) : duration;
+  const clip=format==='shorts'?shortsClip(duration):{start:0,duration};
+  const renderDuration = clip.duration;
   const filters = buildCinematicFilters(targetWidth, targetHeight, renderDuration, preset,intensity,effects,images.length);
   let progressBuffer='';
   const parseProgress=(chunk:string)=>{
@@ -155,7 +158,7 @@ export async function renderMedia(image: string|string[], audio: string, output:
   await runMediaTool(process.env.FFMPEG_PATH || 'ffmpeg', [
     '-hide_banner', '-loglevel', 'error', '-nostdin', '-n', '-max_alloc', '67108864', '-filter_complex_threads', '2',
     ...imageInputs,
-    '-protocol_whitelist', 'file,pipe', '-f', audioKind, '-i', audio,
+    '-protocol_whitelist', 'file,pipe', '-f', audioKind, ...(format==='shorts'&&clip.start>0?['-ss',clip.start.toFixed(3)]:[]), '-i', audio,
     '-filter_complex', filters.video+';'+filters.audio, '-map', '[vout]', '-map', '[aout]', '-map_metadata', '-1',
     '-c:v', 'libx264', '-threads', '2', '-preset', 'superfast', '-crf', '22', '-maxrate', '900k', '-bufsize', '1800k', '-pix_fmt', 'yuv420p',
     '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-t', String(renderDuration), '-shortest', '-fs', String(MAX_OUTPUT_BYTES), '-movflags', '+faststart',

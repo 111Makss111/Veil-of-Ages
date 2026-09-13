@@ -81,6 +81,8 @@ CREATE TABLE IF NOT EXISTS factory_releases (
  state TEXT NOT NULL CHECK(state IN ('rendering','review','failed','publishing','private','uncertain')),
  error TEXT, video_id TEXT, progress INTEGER NOT NULL DEFAULT 0, stage TEXT NOT NULL DEFAULT 'queued', progress_detail TEXT NOT NULL DEFAULT '',
  started_at TIMESTAMPTZ, render_started_at TIMESTAMPTZ, processed_seconds DOUBLE PRECISION, render_duration DOUBLE PRECISION,
+ short_output_id UUID REFERENCES factory_assets(id), short_state TEXT CHECK(short_state IN ('rendering','review','failed')),
+ short_error TEXT, short_progress INTEGER NOT NULL DEFAULT 0, short_started_at TIMESTAMPTZ, short_updated_at TIMESTAMPTZ,
  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ALTER TABLE factory_releases ALTER COLUMN cover_id DROP NOT NULL;
@@ -91,6 +93,12 @@ ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
 ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS render_started_at TIMESTAMPTZ;
 ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS processed_seconds DOUBLE PRECISION;
 ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS render_duration DOUBLE PRECISION;
+ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_output_id UUID REFERENCES factory_assets(id);
+ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_state TEXT CHECK(short_state IN ('rendering','review','failed'));
+ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_error TEXT;
+ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_progress INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_started_at TIMESTAMPTZ;
+ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_updated_at TIMESTAMPTZ;
 CREATE UNIQUE INDEX IF NOT EXISTS factory_one_render ON factory_releases((true)) WHERE state='rendering';
 CREATE TABLE IF NOT EXISTS factory_release_scenes (
  release_id UUID NOT NULL REFERENCES factory_releases(id) ON DELETE CASCADE,
@@ -136,7 +144,7 @@ export async function startRelease(storage: ObjectStore, requestKey: string, gen
   return factoryLock(async db => {
     const existing = (await db.query('SELECT * FROM factory_releases WHERE request_key=$1',[requestKey])).rows[0];
     if (existing) return { release: existing, fresh: false };
-    if ((await db.query("SELECT id FROM factory_releases WHERE state='rendering'")).rowCount) throw new FactoryError(409,'Лінія вже збирає випуск. Дочекайся завершення.');
+    if ((await db.query("SELECT id FROM factory_releases WHERE state='rendering' OR short_state='rendering'")).rowCount) throw new FactoryError(409,'Лінія вже монтує відео. Дочекайся завершення.');
     const recipe = (await db.query('SELECT * FROM factory_recipe WHERE id=1 AND channel_id=$1',[channelId])).rows[0];
     if (!recipe) throw new FactoryError(409,'Обраний канал ще не має власної виробничої лінії.');
     const idea=ideaId?(await db.query("SELECT * FROM factory_song_ideas WHERE id=$1 AND channel_id=$2 AND state='approved' AND audio_id IS NOT NULL",[ideaId,channelId])).rows[0]:null;

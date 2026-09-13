@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { Script } from 'node:vm';
 import Fastify from 'fastify';
-import { buildCinematicFilters, MAX_OUTPUT_BYTES, mediaKind, runMediaTool, MediaToolError } from './media-render.js';
+import { buildCinematicFilters, MAX_OUTPUT_BYTES, mediaKind, runMediaTool, MediaToolError, shortsClip } from './media-render.js';
 import { mediaScript } from './media-ui.js';
 
 process.env.PUBLIC_API_URL = 'https://api.example.test';
@@ -55,6 +55,11 @@ test('cinematic presets build bounded video and audio filter graphs', () => {
   assert.ok(!minimal.video.includes('fade=t='));
   assert.match(minimal.audio,/loudnorm=/);
   assert.ok(!minimal.audio.includes('afade='));
+});
+
+test('Shorts selects a bounded 30-second fragment around the later musical peak',()=>{
+  assert.deepEqual(shortsClip(20),{start:0,duration:20});
+  assert.deepEqual(shortsClip(240),{start:117,duration:30});
 });
 
 test('media files require authentication; invalid origin is rejected', async () => {
