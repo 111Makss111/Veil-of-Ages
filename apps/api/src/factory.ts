@@ -181,7 +181,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
         return writes;
       };
       const failure=(error:unknown)=>{
-        if(stage==='generating-image')return 'Workers AI не завершив створення обкладинки. Перевір доступ до Workers AI та повтори з тією самою концепцією.';
+        if(stage==='generating-image')return error instanceof Error&&/^Workers AI|^Генерац/.test(error.message)?error.message:'Workers AI не завершив створення обкладинки. Перевір доступ до Workers AI та повтори з тією самою концепцією.';
         if(stage==='downloading')return 'Не вдалося отримати матеріали з R2. Перевір підключення сховища та повтори.';
         if(stage==='saving-cover'||stage==='uploading')return 'R2 не підтвердив збереження файла. Перевір сховище перед повтором.';
         if(stage==='rendering'&&error instanceof MediaToolError&&error.reason==='timeout')return 'Монтаж не вклався у 90 хвилин. Трек і обкладинка збережені; повтор використає ті самі матеріали.';

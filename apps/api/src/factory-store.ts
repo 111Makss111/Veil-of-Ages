@@ -151,17 +151,20 @@ export async function startRelease(storage: ObjectStore, requestKey: string, gen
     const song=idea?songPackageSchema.parse(idea.content):null;
     const creative=song?{title:song.title,concept:song.concept,artworkPrompt:song.artworkPrompt}:undefined;
     if (!track) throw new FactoryError(409,'У дозволених жанрових контейнерах цього каналу немає сумісних невикористаних треків.');
+    // A regular music release needs one strong key visual. Multi-scene generation
+    // belongs to the separate cinematic line and must not triple cost or failures here.
+    const generatedSceneCount=idea?1:GENERATED_SCENE_COUNT;
     let concept:ReturnType<typeof buildReleaseConcept>|null=null;
     let sceneAssets:Array<{id:string;position:number;label:string;prompt:string;seed:number}>=[];
     let cover = generateImage ? null : (await db.query("SELECT id FROM factory_assets WHERE id=$1 AND kind='image' AND state='ready'",[recipe.cover_id])).rows[0];
     if(!generateImage&&!cover)throw new FactoryError(409,'Підключи Workers AI або додай резервну обкладинку.');
-    await capacity(db, storage, MAX_OUTPUT_BYTES+(generateImage?MAX_GENERATED_IMAGE_BYTES*GENERATED_SCENE_COUNT:0));
+    await capacity(db, storage, MAX_OUTPUT_BYTES+(generateImage?MAX_GENERATED_IMAGE_BYTES*generatedSceneCount:0));
     const id=randomUUID(), outputId=randomUUID();
     if(generateImage){
       const used=new Set((await db.query("SELECT recipe->>'conceptHash' AS hash FROM factory_releases WHERE recipe->>'conceptHash' IS NOT NULL")).rows.map(r=>r.hash));
       for(let attempt=0;attempt<128;attempt++){const candidate=buildReleaseConcept(track.hash,attempt,creative);if(!used.has(candidate.hash)){concept=candidate;break;}}
       if(!concept)throw new FactoryError(409,'Не вдалося підібрати нову сцену. Розширимо каталог концепцій.');
-      for(const [position,scene] of concept.scenes.entries()){
+      for(const [position,scene] of concept.scenes.slice(0,generatedSceneCount).entries()){
         const sceneId=randomUUID();
         const asset=(await db.query("INSERT INTO factory_assets(id,kind,hash,object_key,name,bytes,type,vocal,state,theme) VALUES($1,'image',$2,$3,$4,$5,'image/jpeg',$6,'reserved',$7) RETURNING id",[sceneId,'ai:'+scene.hash,'factory/'+sceneId,`${concept.title} · ${scene.label}.jpg`,MAX_GENERATED_IMAGE_BYTES,releaseVocal,scene.scene])).rows[0];
         sceneAssets.push({id:asset.id,position,label:scene.label,prompt:scene.prompt,seed:scene.seed});
@@ -176,7 +179,7 @@ export async function startRelease(storage: ObjectStore, requestKey: string, gen
     const youtubeTags=song?['Viking music','epic Viking song','Nordic music','Viking anthem','Veil of Ages',track.container_id==='viking-rap-duet'?'Viking rap':'Viking songs']:[];
     const visualPreset=chooseVisualPreset('auto',track.hash,track.theme);
     const motionIntensity=motionIntensitySchema.parse(recipe.motion_intensity||'cinematic');
-    const sceneCount=generateImage?3:1;
+    const sceneCount=generateImage?generatedSceneCount:1;
     const effects=sceneCount===3?ACTIVE_EFFECT_IDS:ACTIVE_EFFECT_IDS.filter(id=>id!=='story.three-scenes'&&id!=='transition.scene-crossfades');
     const productionPlan=productionPlanSchema.parse({version:2,source:'baseline-rules',sceneCount,visualPreset,motionIntensity,effects,approvalRequired:true});
     const release=(await db.query("INSERT INTO factory_releases(id,request_key,track_id,cover_id,output_id,title,recipe,state,progress,stage,progress_detail,started_at) VALUES($1,$2,$3,$4,$5,$6,$7,'rendering',2,'preparing','Резервуємо місце та готуємо виробничу лінію.',NOW()) RETURNING *",[id,requestKey,track.id,cover.id,outputId,title.slice(0,100),JSON.stringify({channelId:recipe.channel_id,containerId:track.container_id,genre:track.container_name,vocal:releaseVocal,revision:recipe.revision,theme:track.theme,visualPreset,motionIntensity,productionPlan,coverMode:generateImage?'ai':'manual',conceptHash:concept?.hash,prompt:concept?.prompt,seed:concept?.seed,scene:concept?.scene,scenes:concept?.scenes,ideaId:idea?.id||null,youtubeDescription,youtubeTags})])).rows[0];

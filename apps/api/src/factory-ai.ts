@@ -48,19 +48,30 @@ export function createCloudflareImageGenerator(): ImageGenerator | null {
   const token=(process.env.CLOUDFLARE_AI_TOKEN||'').trim();
   if(!/^[a-f0-9]{32}$/i.test(account)||token.length<20)return null;
   return async(prompt,seed,signal)=>{
-    const controller=new AbortController();
-    const abort=()=>controller.abort();signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)abort();
-    const timer=setTimeout(()=>controller.abort(),90000);
-    try{
-      const form=new FormData();form.set('prompt',prompt);form.set('width','1280');form.set('height','720');form.set('guidance','3.5');form.set('seed',String(seed));
-      const response=await fetch(`https://api.cloudflare.com/client/v4/accounts/${account}/ai/run/@cf/black-forest-labs/flux-2-klein-4b`,{method:'POST',headers:{Authorization:`Bearer ${token}`},body:form,signal:controller.signal});
-      if(!response.ok)throw new Error('Генератор образів не відповів. Перевір Workers AI token і денний ліміт.');
-      const length=Number(response.headers.get('content-length')||0);if(length>MAX_GENERATED_IMAGE_BYTES*1.5)throw new Error('Генератор повернув завеликий результат.');
-      const payload=await response.json() as {success?:boolean;result?:{image?:string};errors?:unknown[]};
-      const encoded=payload.result?.image;if(!payload.success||typeof encoded!=='string'||encoded.length>MAX_GENERATED_IMAGE_BYTES*1.5)throw new Error('Workers AI не повернув готову картинку.');
-      const data=Buffer.from(encoded,'base64');if(data.length<16||data.length>MAX_GENERATED_IMAGE_BYTES)throw new Error('Згенерована картинка має неправильний розмір.');
-      const kind=mediaKind(data.subarray(0,16),true);return {data,type:kind==='png'?'image/png':'image/jpeg'};
-    }catch(error){if(error instanceof Error&&/Генератор|Workers AI|Згенерована/.test(error.message))throw error;throw new Error('Генерація образу перервалася. Спробуй повтор випуску.');}
-    finally{clearTimeout(timer);signal?.removeEventListener('abort',abort);}
+    let lastStatus=0;
+    for(let attempt=1;attempt<=3;attempt++){
+      const controller=new AbortController();
+      const abort=()=>controller.abort();signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)abort();
+      const timer=setTimeout(()=>controller.abort(),90000);
+      try{
+        const form=new FormData();form.set('prompt',prompt);form.set('width','1280');form.set('height','720');form.set('guidance','3.5');form.set('seed',String(seed));
+        const response=await fetch(`https://api.cloudflare.com/client/v4/accounts/${account}/ai/run/@cf/black-forest-labs/flux-2-klein-4b`,{method:'POST',headers:{Authorization:`Bearer ${token}`},body:form,signal:controller.signal});
+        lastStatus=response.status;
+        if(!response.ok){await response.body?.cancel();if(![429,500,502,503,504].includes(response.status))throw new Error(response.status===401||response.status===403?'Workers AI не прийняв токен або право AI Run.':`Workers AI відхилив запит (код ${response.status}).`);}
+        else{
+          const length=Number(response.headers.get('content-length')||0);if(length>MAX_GENERATED_IMAGE_BYTES*1.5)throw new Error('Генератор повернув завеликий результат.');
+          const payload=await response.json() as {success?:boolean;result?:{image?:string};errors?:unknown[]};
+          const encoded=payload.result?.image;if(!payload.success||typeof encoded!=='string'||encoded.length>MAX_GENERATED_IMAGE_BYTES*1.5)throw new Error('Workers AI не повернув готову картинку.');
+          const data=Buffer.from(encoded,'base64');if(data.length<16||data.length>MAX_GENERATED_IMAGE_BYTES)throw new Error('Згенерована картинка має неправильний розмір.');
+          const kind=mediaKind(data.subarray(0,16),true);return {data,type:kind==='png'?'image/png':'image/jpeg'};
+        }
+      }catch(error){
+        if(signal?.aborted)throw new Error('Генерацію образу перервано зупинкою сервера.');
+        if(error instanceof Error&&/токен|право AI Run|відхилив|завеликий|не повернув|неправильний/.test(error.message))throw error;
+        if(attempt===3)throw new Error(lastStatus===429?'Workers AI досяг ліміту запитів. Повтори пізніше.':'Workers AI тричі не відповів на створення образу.');
+      }finally{clearTimeout(timer);signal?.removeEventListener('abort',abort);}
+      await new Promise(resolve=>setTimeout(resolve,attempt*1200));
+    }
+    throw new Error('Workers AI не завершив створення образу.');
   };
 }
