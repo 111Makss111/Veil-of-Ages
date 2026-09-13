@@ -5,7 +5,7 @@ import { INPUT_LIMIT, STORAGE_LIMIT, type ObjectStore } from './factory-storage.
 import { MAX_OUTPUT_BYTES } from './media-render.js';
 import type { CinematicPreset } from './media-render.js';
 import { buildReleaseConcept, MAX_GENERATED_IMAGE_BYTES } from './factory-ai.js';
-import { ACTIVE_EFFECT_IDS, motionIntensitySchema, productionPlanSchema } from './factory-effects.js';
+import { motionIntensitySchema, productionPlanSchema } from './factory-effects.js';
 import { songPackageSchema } from './factory-song-domain.js';
 
 export const factoryMigration = `
@@ -188,7 +188,9 @@ export async function startRelease(storage: ObjectStore, requestKey: string, gen
     const visualPreset=chooseVisualPreset('auto',track.hash,track.theme);
     const motionIntensity=motionIntensitySchema.parse(recipe.motion_intensity||'cinematic');
     const sceneCount=1;
-    const effects=ACTIVE_EFFECT_IDS.filter(id=>id!=='story.three-scenes'&&id!=='transition.scene-crossfades');
+    // The music line must leave the small Render instance responsive for uploads.
+    // Heavy mist, particles, zoom and animated light stay in the separate cinematic line.
+    const effects=['look.dark-fantasy-grade','framing.vignette','transition.soft-fades','audio.loudness-master'] as const;
     const productionPlan=productionPlanSchema.parse({version:2,source:'baseline-rules',sceneCount,visualPreset,motionIntensity,effects,approvalRequired:true});
     const release=(await db.query("INSERT INTO factory_releases(id,request_key,track_id,cover_id,output_id,title,recipe,state,progress,stage,progress_detail,started_at) VALUES($1,$2,$3,$4,$5,$6,$7,'rendering',2,'preparing','Резервуємо місце та готуємо виробничу лінію.',NOW()) RETURNING *",[id,requestKey,track.id,cover.id,outputId,title.slice(0,100),JSON.stringify({channelId:recipe.channel_id,containerId:track.container_id,genre:track.container_name,vocal:releaseVocal,revision:recipe.revision,theme:track.theme,visualPreset,motionIntensity,productionPlan,coverMode:generateImage?'ai':'manual',conceptHash:concept?.hash,prompt:concept?.prompt,seed:concept?.seed,scene:concept?.scene,scenes:concept?.scenes,ideaId:idea?.id||null,youtubeDescription,youtubeTags})])).rows[0];
     for(const scene of sceneAssets)await db.query('INSERT INTO factory_release_scenes(release_id,position,asset_id,label,prompt,seed) VALUES($1,$2,$3,$4,$5,$6)',[id,scene.position,scene.id,scene.label,scene.prompt,scene.seed]);

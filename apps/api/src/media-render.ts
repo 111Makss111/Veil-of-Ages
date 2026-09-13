@@ -160,11 +160,11 @@ export async function renderMedia(image: string|string[], audio: string, output:
   };
   const imageInputs=images.flatMap(pictureFile=>['-protocol_whitelist','file,pipe','-f','image2','-loop','1','-framerate','24','-i',pictureFile]);
   await runMediaTool(process.env.FFMPEG_PATH || 'ffmpeg', [
-    '-hide_banner', '-loglevel', 'error', '-nostdin', '-n', '-max_alloc', '67108864', '-filter_complex_threads', '2',
+    '-hide_banner', '-loglevel', 'error', '-nostdin', '-n', '-max_alloc', '67108864', '-filter_complex_threads', '1',
     ...imageInputs,
     '-protocol_whitelist', 'file,pipe', '-f', audioKind, ...(format==='shorts'&&clip.start>0?['-ss',clip.start.toFixed(3)]:[]), '-i', audio,
     '-filter_complex', filters.video+';'+filters.audio, '-map', '[vout]', '-map', '[aout]', '-map_metadata', '-1',
-    '-c:v', 'libx264', '-threads', '2', '-preset', 'superfast', '-crf', '22', '-maxrate', '900k', '-bufsize', '1800k', '-pix_fmt', 'yuv420p',
+    '-c:v', 'libx264', '-threads', '1', '-preset', 'superfast', '-crf', '22', '-maxrate', '900k', '-bufsize', '1800k', '-pix_fmt', 'yuv420p',
     '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-t', String(renderDuration), '-shortest', '-fs', String(MAX_OUTPUT_BYTES), '-movflags', '+faststart',
     '-progress','pipe:1','-nostats',output
   ], 90 * 60 * 1000, signal, parseProgress,5*60*1000);

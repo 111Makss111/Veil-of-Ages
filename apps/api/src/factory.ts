@@ -110,7 +110,17 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
       const content=idea?songPackageSchema.parse(idea.content):null;
       const savedName=content?content.title.replace(/[<>\x00-\x1f]/g,'').slice(0,135)+(kind==='mp3'?'.mp3':'.wav'):originalName;
       const {asset,fresh}=await reserveAsset(s,{...meta,hash:createHash('sha256').update(data).digest('hex'),name:savedName,bytes:data.length,type,duration});
-      if(!fresh){if(asset.state!=='ready')throw new FactoryError(409,'Попереднє збереження цього файла не підтверджене. Він утримує резерв місця; перевір R2 перед повтором.');if(idea){if((await requirePool().query('SELECT id FROM factory_song_ideas WHERE audio_id=$1',[asset.id])).rowCount||(await requirePool().query('SELECT id FROM factory_releases WHERE track_id=$1',[asset.id])).rowCount)throw new FactoryError(409,'Цей аудіофайл уже належить іншому запуску.');await requirePool().query('UPDATE factory_song_ideas SET audio_id=$2,updated_at=NOW() WHERE id=$1',[idea.id,asset.id]);}return {id:asset.id,duplicate:true,ideaId:idea?.id||null};}
+      if(!fresh){
+        if(idea&&((await requirePool().query('SELECT id FROM factory_song_ideas WHERE audio_id=$1 AND id<>$2',[asset.id,idea.id])).rowCount||(await requirePool().query('SELECT id FROM factory_releases WHERE track_id=$1',[asset.id])).rowCount))throw new FactoryError(409,'Цей аудіофайл уже належить іншому запуску.');
+        if(asset.state!=='ready'){
+          // A browser or service restart can lose the response after reservation. Repeating
+          // the same file safely overwrites the same R2 key instead of trapping the song.
+          try{await s.put(asset.object_key,data,type);await requirePool().query("UPDATE factory_assets SET state='ready',bytes=$2,type=$3,duration=$4 WHERE id=$1",[asset.id,data.length,type,duration]);}
+          catch(e){await requirePool().query("UPDATE factory_assets SET state='uncertain' WHERE id=$1",[asset.id]).catch(()=>{});throw e;}
+        }
+        if(idea)await requirePool().query('UPDATE factory_song_ideas SET audio_id=$2,updated_at=NOW() WHERE id=$1',[idea.id,asset.id]);
+        return {id:asset.id,duplicate:true,recovered:asset.state!=='ready',ideaId:idea?.id||null};
+      }
       try{await s.put(asset.object_key,data,type);await requirePool().query("UPDATE factory_assets SET state='ready' WHERE id=$1",[asset.id]);}
       catch(e){await requirePool().query("UPDATE factory_assets SET state='uncertain' WHERE id=$1",[asset.id]).catch(()=>{});throw e;}
       if(idea)await requirePool().query('UPDATE factory_song_ideas SET audio_id=$2,updated_at=NOW() WHERE id=$1',[idea.id,asset.id]);

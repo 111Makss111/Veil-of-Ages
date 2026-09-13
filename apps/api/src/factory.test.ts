@@ -26,6 +26,8 @@ test('factory browser script parses and storage fails closed without configurati
   assert.match(factoryScript,/Копіювати назву/);
   assert.match(factoryScript,/Монтувати відео/);
   assert.match(factoryScript,/busy=false;await load\(\);await usage\(\)/);
+  assert.match(factoryScript,/new XMLHttpRequest\(\)/);
+  assert.match(factoryScript,/request\.timeout=120000/);
   assert.doesNotMatch(factoryScript,/function ideas\(\)/);
   assert.match(factoryScript,/Скасувати процес/);
   assert.match(factoryScript,/ideas\.some\(idea=>idea\.state==='generating'\)/);
@@ -112,7 +114,7 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
     await q("UPDATE factory_releases SET state='rendering' WHERE id=$1",[id]);const cancelled=await post('/api/factory/releases/'+id+'/cancel',{});assert.equal(cancelled.statusCode,200,cancelled.body);assert.equal(cancelled.json().mode,'video');assert.match(((await q('SELECT error FROM factory_releases WHERE id=$1',[id])).rows[0] as {error:string}).error,/скасовано/i);
     renderFail=false;assert.equal((await post('/api/factory/releases/'+id+'/retry',{})).statusCode,202);
     await waitState(id,'review');assert.equal(renders,2);assert.equal(generated,1);assert.equal(renderPresets.length,2);assert.deepEqual(renderSceneCounts,[1,1]);
-    const release=(await q('SELECT * FROM factory_releases WHERE id=$1',[id])).rows[0] as {track_id:string;output_id:string;progress:number;stage:string;recipe:{coverMode:string;prompt:string;motionIntensity:string;productionPlan:{version:number;source:string;sceneCount:number;effects:string[]}}};assert.equal(release.track_id,audio.json().id);assert.equal(release.recipe.coverMode,'ai');assert.match(release.recipe.prompt,/Viking/);assert.equal(release.recipe.motionIntensity,'cinematic');assert.equal(release.recipe.productionPlan.version,2);assert.equal(release.recipe.productionPlan.sceneCount,1);assert.equal(release.recipe.productionPlan.source,'baseline-rules');assert.ok(!release.recipe.productionPlan.effects.includes('story.three-scenes'));assert.ok(!release.recipe.productionPlan.effects.includes('camera.center-push'));assert.equal(release.progress,100);assert.equal(release.stage,'complete');
+    const release=(await q('SELECT * FROM factory_releases WHERE id=$1',[id])).rows[0] as {track_id:string;output_id:string;progress:number;stage:string;recipe:{coverMode:string;prompt:string;motionIntensity:string;productionPlan:{version:number;source:string;sceneCount:number;effects:string[]}}};assert.equal(release.track_id,audio.json().id);assert.equal(release.recipe.coverMode,'ai');assert.match(release.recipe.prompt,/Viking/);assert.equal(release.recipe.motionIntensity,'cinematic');assert.equal(release.recipe.productionPlan.version,2);assert.equal(release.recipe.productionPlan.sceneCount,1);assert.equal(release.recipe.productionPlan.source,'baseline-rules');assert.deepEqual(release.recipe.productionPlan.effects,['look.dark-fantasy-grade','framing.vignette','transition.soft-fades','audio.loudness-master']);assert.equal(release.progress,100);assert.equal(release.stage,'complete');
     assert.equal((await app.inject('/api/factory/assets/'+release.output_id+'/file')).statusCode,200);
     assert.equal((await post('/api/factory/assets/'+release.output_id+'/delete',{confirmation:'DELETE'})).statusCode,409);
     authorized=false;assert.equal((await app.inject('/api/factory/assets/'+release.output_id+'/file')).statusCode,401);authorized=true;
@@ -136,6 +138,6 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
     assert.equal(linkedAfter.audio_id,null);
     failPut=true;const failed=await upload('audio',Buffer.from('ID3-another-test-audio-more-bytes'),'Other.mp3');assert.equal(failed.statusCode,503);assert.ok(!failed.body.includes('secret'));
     assert.ok((await app.inject('/api/factory/storage')).json().reserved>0);
-    failPut=false;assert.equal((await upload('audio',Buffer.from('ID3-another-test-audio-more-bytes'),'Other.mp3')).statusCode,409);
+    failPut=false;const recovered=await upload('audio',Buffer.from('ID3-another-test-audio-more-bytes'),'Other.mp3');assert.equal(recovered.statusCode,200,recovered.body);assert.equal(recovered.json().recovered,true);
   }finally{await app.close();pool!.query=originalQuery;pool!.connect=originalConnect;await db.close();await pool!.end();}
 });
