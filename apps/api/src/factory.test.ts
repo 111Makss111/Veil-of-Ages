@@ -22,6 +22,8 @@ test('factory browser script parses and storage fails closed without configurati
   assert.match(factoryScript,/video\.poster=thumbnailUrl/);
   assert.match(factoryScript,/Повторити встановлення обкладинки/);
   assert.match(factoryScript,/Створити Shorts на 30 секунд/);
+  assert.match(factoryScript,/Великий текст автоматично згорнуто/);
+  assert.doesNotMatch(factoryScript,/function ideas\(\)/);
   const before=process.env.R2_ACCOUNT_ID;delete process.env.R2_ACCOUNT_ID;
   assert.equal(createObjectStore(),null);
   if(before)process.env.R2_ACCOUNT_ID=before;
