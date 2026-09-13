@@ -22,7 +22,10 @@ test('factory browser script parses and storage fails closed without configurati
   assert.match(factoryScript,/video\.poster=thumbnailUrl/);
   assert.match(factoryScript,/Повторити встановлення обкладинки/);
   assert.match(factoryScript,/Створити Shorts на 30 секунд/);
-  assert.match(factoryScript,/Великий текст автоматично згорнуто/);
+  assert.match(factoryScript,/form\.hidden=!!active/);
+  assert.match(factoryScript,/Копіювати назву/);
+  assert.match(factoryScript,/Монтувати відео/);
+  assert.match(factoryScript,/busy=false;await load\(\);await usage\(\)/);
   assert.doesNotMatch(factoryScript,/function ideas\(\)/);
   assert.match(factoryScript,/Скасувати процес/);
   assert.match(factoryScript,/ideas\.some\(idea=>idea\.state==='generating'\)/);
