@@ -14,7 +14,6 @@ import { factoryPage, factoryCss, factoryScript } from './factory-ui.js';
 import { factoryChannelCss } from './factory-channel-ui.js';
 import { createCloudflareImageGenerator, type ImageGenerator } from './factory-ai.js';
 import { ACTIVE_EFFECT_IDS, EFFECT_CATALOG, motionIntensitySchema } from './factory-effects.js';
-import { songSchema } from './songs-domain.js';
 
 const uuid=z.string().uuid();
 const vocal=z.enum(['instrumental','choir']);
@@ -72,18 +71,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     const s=needStorage();if(uploading)throw new FactoryError(429,'Дочекайся завершення поточного файла.');uploading=true;
     let dir:string|undefined;
     try{
-      const requested=z.object({kind:z.enum(['audio','image']),vocal:vocal.default('instrumental'),containerId:containerId.default('viking-anthem'),theme:z.string().trim().max(500).default(''),songProjectId:uuid.optional()}).parse(req.query);
-      let meta:{kind:'audio'|'image';vocal:'instrumental'|'choir';containerId:string;theme:string;songProjectId?:string;songVersionId?:string}=requested;
-      let approvedSong:ReturnType<typeof songSchema.parse>|null=null;
-      if(requested.songProjectId){
-        if(requested.kind!=='audio')throw new FactoryError(400,'До творчого проєкту можна додати лише аудіофайл.');
-        const source=(await requirePool().query(`SELECT p.id,p.profile_id,p.approved_version,v.content FROM song_projects p
-          JOIN song_versions v ON v.id=p.approved_version AND v.project_id=p.id
-          WHERE p.id=$1 AND p.deleted_at IS NULL`,[requested.songProjectId])).rows[0];
-        if(!source)throw new FactoryError(409,'Спочатку затвердь готову версію пісні.');
-        approvedSong=songSchema.parse(source.content);
-        meta={kind:'audio',vocal:'choir',containerId:source.profile_id==='viking-rap'?'viking-rap-duet':'viking-anthem',theme:approvedSong.concept.slice(0,500),songProjectId:source.id,songVersionId:source.approved_version};
-      }
+      const meta=z.object({kind:z.enum(['audio','image']),vocal:vocal.default('instrumental'),containerId:containerId.default('viking-anthem'),theme:z.string().trim().max(500).default('')}).parse(req.query);
       const part=await req.file();if(!part)throw new FactoryError(400,'Обери файл.');
       const data=await part.toBuffer();if(part.file.truncated||data.length>UPLOAD_MAX||data.length<16)throw new FactoryError(400,'Файл має бути до 25 МіБ.');
       const kind=mediaKind(data.subarray(0,16),meta.kind==='image');
@@ -98,12 +86,11 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
       if(meta.kind==='audio'&&!(await requirePool().query('SELECT id FROM factory_containers WHERE id=$1',[meta.containerId])).rowCount)throw new FactoryError(400,'Обраний жанровий контейнер не існує.');
       const type=meta.kind==='audio'?(kind==='mp3'?'audio/mpeg':'audio/wav'):(kind==='png'?'image/png':'image/jpeg');
       const originalName=part.filename.replace(/[<>\x00-\x1f]/g,'').slice(0,150)||'Без назви';
-      const linkedName=approvedSong?(approvedSong.title.replace(/[<>\x00-\x1f]/g,'').slice(0,135)+(kind==='mp3'?'.mp3':'.wav')):originalName;
-      const {asset,fresh}=await reserveAsset(s,{...meta,hash:createHash('sha256').update(data).digest('hex'),name:linkedName,bytes:data.length,type,duration});
+      const {asset,fresh}=await reserveAsset(s,{...meta,hash:createHash('sha256').update(data).digest('hex'),name:originalName,bytes:data.length,type,duration});
       if(!fresh){if(asset.state!=='ready')throw new FactoryError(409,'Попереднє збереження цього файла не підтверджене. Він утримує резерв місця; перевір R2 перед повтором.');return {id:asset.id,duplicate:true};}
       try{await s.put(asset.object_key,data,type);await requirePool().query("UPDATE factory_assets SET state='ready' WHERE id=$1",[asset.id]);}
       catch(e){await requirePool().query("UPDATE factory_assets SET state='uncertain' WHERE id=$1",[asset.id]).catch(()=>{});throw e;}
-      return reply.code(201).send({id:asset.id,duplicate:false,linkedProjectId:meta.songProjectId||null,containerId:asset.container_id});
+      return reply.code(201).send({id:asset.id,duplicate:false,containerId:asset.container_id});
     }finally{uploading=false;if(dir)await rm(dir,{recursive:true,force:true});}
   });
   app.get('/api/factory/assets/:id/file',{logLevel:'silent'},async(req,reply)=>{

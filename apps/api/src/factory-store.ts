@@ -6,7 +6,6 @@ import { MAX_OUTPUT_BYTES } from './media-render.js';
 import type { CinematicPreset } from './media-render.js';
 import { buildReleaseConcept, GENERATED_SCENE_COUNT, MAX_GENERATED_IMAGE_BYTES } from './factory-ai.js';
 import { ACTIVE_EFFECT_IDS, motionIntensitySchema, productionPlanSchema } from './factory-effects.js';
-import { songSchema } from './songs-domain.js';
 
 export const factoryMigration = `
 CREATE TABLE IF NOT EXISTS factory_channels (
@@ -59,9 +58,6 @@ CREATE TABLE IF NOT EXISTS factory_assets (
  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(kind,hash)
 );
 ALTER TABLE factory_assets ADD COLUMN IF NOT EXISTS container_id TEXT REFERENCES factory_containers(id);
-ALTER TABLE factory_assets ADD COLUMN IF NOT EXISTS song_project_id UUID REFERENCES song_projects(id) ON DELETE SET NULL;
-ALTER TABLE factory_assets ADD COLUMN IF NOT EXISTS song_version_id UUID REFERENCES song_versions(id) ON DELETE SET NULL;
-CREATE INDEX IF NOT EXISTS factory_assets_song_project ON factory_assets(song_project_id) WHERE song_project_id IS NOT NULL;
 UPDATE factory_assets SET container_id='dark-fantasy' WHERE kind='audio' AND container_id IS NULL;
 CREATE TABLE IF NOT EXISTS factory_recipe (
  id INTEGER PRIMARY KEY CHECK(id=1), vocal TEXT NOT NULL DEFAULT 'choir' CHECK(vocal IN ('instrumental','choir')),
@@ -115,22 +111,16 @@ export async function capacity(db: Pick<PoolClient,'query'>, storage: ObjectStor
   if (actual + pending + bytes > (input ? INPUT_LIMIT : STORAGE_LIMIT)) throw new FactoryError(409, input ? 'Запас для нових матеріалів вичерпано. Залишаємо 2 ГБ для результатів. Нічого автоматично не видаляємо.' : 'Досягнуто ліміт фабрики 8 ГБ. Звільнення місця потребує твого рішення.');
   return { actual, pending };
 }
-export async function reserveAsset(storage: ObjectStore, data: { kind: 'audio'|'image'; hash: string; name: string; bytes: number; type: string; duration: number|null; theme: string; vocal: string; containerId?: string|null; songProjectId?:string|null; songVersionId?:string|null }) {
+export async function reserveAsset(storage: ObjectStore, data: { kind: 'audio'|'image'; hash: string; name: string; bytes: number; type: string; duration: number|null; theme: string; vocal: string; containerId?: string|null }) {
   return factoryLock(async db => {
     const existing = (await db.query('SELECT * FROM factory_assets WHERE kind=$1 AND hash=$2',[data.kind,data.hash])).rows[0];
     if (existing) {
-      if(data.songProjectId&&existing.song_project_id&&existing.song_project_id!==data.songProjectId)throw new FactoryError(409,'Цей аудіофайл уже прив’язаний до іншого проєкту пісні.');
-      if(data.songProjectId&&!existing.song_project_id){
-        if((await db.query('SELECT id FROM factory_releases WHERE track_id=$1',[existing.id])).rowCount)throw new FactoryError(409,'Цей файл уже використано у випуску без зв’язку з творчим проєктом.');
-        const updated=(await db.query('UPDATE factory_assets SET song_project_id=$2,song_version_id=$3,name=$4,theme=$5,vocal=$6,container_id=$7 WHERE id=$1 RETURNING *',[existing.id,data.songProjectId,data.songVersionId,data.name,data.theme,data.vocal,data.containerId])).rows[0];
-        return {asset:updated,fresh:false};
-      }
       return { asset: existing, fresh: false };
     }
     await capacity(db, storage, data.bytes, true);
     const id = randomUUID();
-    const asset = (await db.query(`INSERT INTO factory_assets(id,kind,hash,object_key,name,bytes,type,duration,theme,vocal,container_id,song_project_id,song_version_id,state)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'reserved') RETURNING *`,[id,data.kind,data.hash,'factory/'+id,data.name,data.bytes,data.type,data.duration,data.theme,data.vocal,data.kind==='audio'?(data.containerId||'viking-anthem'):null,data.kind==='audio'?(data.songProjectId||null):null,data.kind==='audio'?(data.songVersionId||null):null])).rows[0];
+    const asset = (await db.query(`INSERT INTO factory_assets(id,kind,hash,object_key,name,bytes,type,duration,theme,vocal,container_id,state)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'reserved') RETURNING *`,[id,data.kind,data.hash,'factory/'+id,data.name,data.bytes,data.type,data.duration,data.theme,data.vocal,data.kind==='audio'?(data.containerId||'viking-anthem'):null])).rows[0];
     return { asset, fresh: true };
   });
 }
@@ -154,9 +144,6 @@ export async function startRelease(storage: ObjectStore, requestKey: string, gen
       WHERE a.kind='audio' AND a.state='ready' AND a.vocal=$1
       AND NOT EXISTS(SELECT 1 FROM factory_releases r WHERE r.track_id=a.id) ORDER BY a.created_at,a.id LIMIT 1`,[recipe.vocal,recipe.channel_id])).rows[0];
     if (!track) throw new FactoryError(409,'У дозволених жанрових контейнерах цього каналу немає сумісних невикористаних треків.');
-    const songRow=track.song_version_id?(await db.query('SELECT content FROM song_versions WHERE id=$1 AND project_id=$2',[track.song_version_id,track.song_project_id])).rows[0]:null;
-    const song=songRow?songSchema.parse(songRow.content):null;
-    const creative=song?{title:song.title,concept:song.concept,artworkPrompt:song.artworkPrompt}:undefined;
     let concept:ReturnType<typeof buildReleaseConcept>|null=null;
     let sceneAssets:Array<{id:string;position:number;label:string;prompt:string;seed:number}>=[];
     let cover = generateImage ? null : (await db.query("SELECT id FROM factory_assets WHERE id=$1 AND kind='image' AND state='ready'",[recipe.cover_id])).rows[0];
@@ -165,7 +152,7 @@ export async function startRelease(storage: ObjectStore, requestKey: string, gen
     const id=randomUUID(), outputId=randomUUID();
     if(generateImage){
       const used=new Set((await db.query("SELECT recipe->>'conceptHash' AS hash FROM factory_releases WHERE recipe->>'conceptHash' IS NOT NULL")).rows.map(r=>r.hash));
-      for(let attempt=0;attempt<128;attempt++){const candidate=buildReleaseConcept(track.hash,attempt,creative);if(!used.has(candidate.hash)){concept=candidate;break;}}
+      for(let attempt=0;attempt<128;attempt++){const candidate=buildReleaseConcept(track.hash,attempt);if(!used.has(candidate.hash)){concept=candidate;break;}}
       if(!concept)throw new FactoryError(409,'Не вдалося підібрати нову сцену. Розширимо каталог концепцій.');
       for(const [position,scene] of concept.scenes.entries()){
         const sceneId=randomUUID();
@@ -177,15 +164,13 @@ export async function startRelease(storage: ObjectStore, requestKey: string, gen
       sceneAssets=[{id:cover.id,position:0,label:'Єдина сцена',prompt:'',seed:0}];
     }
     await db.query("INSERT INTO factory_assets(id,kind,hash,object_key,name,bytes,type,vocal,state) VALUES($1,'video',$2,$3,$4,$5,'video/mp4',$6,'reserved')",[outputId,id,'factory/'+outputId,'Випуск.mp4',MAX_OUTPUT_BYTES,recipe.vocal]);
-    const title=song?song.title:(concept?.title??track.name.replace(/\.[^.]+$/,'').replace(/[<>\x00-\x1f]/g,'').slice(0,75)+' | Epic Viking Song');
-    const youtubeDescription=song?`${song.concept}\n\nOriginal Viking song from Veil of Ages.\n\n#VikingMusic #EpicViking #VeilOfAges`:'';
-    const youtubeTags=song?['Viking music','epic Viking song','Nordic music','Viking anthem','Veil of Ages',track.container_id==='viking-rap-duet'?'Viking rap':'Viking songs']:[];
+    const title=concept?.title??track.name.replace(/\.[^.]+$/,'').replace(/[<>\x00-\x1f]/g,'').slice(0,75)+' | Epic Viking Song';
     const visualPreset=chooseVisualPreset('auto',track.hash,track.theme);
     const motionIntensity=motionIntensitySchema.parse(recipe.motion_intensity||'cinematic');
     const sceneCount=generateImage?3:1;
     const effects=sceneCount===3?ACTIVE_EFFECT_IDS:ACTIVE_EFFECT_IDS.filter(id=>id!=='story.three-scenes'&&id!=='transition.scene-crossfades');
     const productionPlan=productionPlanSchema.parse({version:2,source:'baseline-rules',sceneCount,visualPreset,motionIntensity,effects,approvalRequired:true});
-    const release=(await db.query("INSERT INTO factory_releases(id,request_key,track_id,cover_id,output_id,title,recipe,state,progress,stage,progress_detail,started_at) VALUES($1,$2,$3,$4,$5,$6,$7,'rendering',2,'preparing','Резервуємо місце та готуємо виробничу лінію.',NOW()) RETURNING *",[id,requestKey,track.id,cover.id,outputId,title.slice(0,100),JSON.stringify({channelId:recipe.channel_id,containerId:track.container_id,genre:track.container_name,vocal:recipe.vocal,revision:recipe.revision,theme:track.theme,visualPreset,motionIntensity,productionPlan,coverMode:generateImage?'ai':'manual',conceptHash:concept?.hash,prompt:concept?.prompt,seed:concept?.seed,scene:concept?.scene,scenes:concept?.scenes,songProjectId:track.song_project_id||null,songVersionId:track.song_version_id||null,youtubeDescription,youtubeTags})])).rows[0];
+    const release=(await db.query("INSERT INTO factory_releases(id,request_key,track_id,cover_id,output_id,title,recipe,state,progress,stage,progress_detail,started_at) VALUES($1,$2,$3,$4,$5,$6,$7,'rendering',2,'preparing','Резервуємо місце та готуємо виробничу лінію.',NOW()) RETURNING *",[id,requestKey,track.id,cover.id,outputId,title.slice(0,100),JSON.stringify({channelId:recipe.channel_id,containerId:track.container_id,genre:track.container_name,vocal:recipe.vocal,revision:recipe.revision,theme:track.theme,visualPreset,motionIntensity,productionPlan,coverMode:generateImage?'ai':'manual',conceptHash:concept?.hash,prompt:concept?.prompt,seed:concept?.seed,scene:concept?.scene,scenes:concept?.scenes})])).rows[0];
     for(const scene of sceneAssets)await db.query('INSERT INTO factory_release_scenes(release_id,position,asset_id,label,prompt,seed) VALUES($1,$2,$3,$4,$5,$6)',[id,scene.position,scene.id,scene.label,scene.prompt,scene.seed]);
     return { release, fresh: true };
   });
