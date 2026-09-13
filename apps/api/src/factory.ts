@@ -27,7 +27,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
   const storage=options.storage ?? createObjectStore();
   const imageGenerator=options.imageGenerator===undefined?createPreferredImageGenerator():options.imageGenerator;
   const configuredImageProvider=options.imageGenerator===undefined?imageGeneratorProvider():options.imageGenerator?'Генератор образів':null;
-  const tasks=new Set<Promise<void>>(); const controller=new AbortController(); let uploading=false;
+  const tasks=new Set<Promise<void>>();const jobs=new Map<string,AbortController>();let uploading=false;
   const needStorage=()=>{if(!storage)throw new FactoryError(503,'Підключи приватне сховище R2 в Render. Файли ще не завантажуються.');return storage;};
   app.addHook('onRequest',async(req,reply)=>{
     reply.header('Cache-Control','no-store').header('X-Content-Type-Options','nosniff').header('Referrer-Policy','same-origin')
@@ -37,7 +37,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
   });
   app.setErrorHandler((e,_req,reply)=>reply.code(e instanceof FactoryError?e.status:e instanceof z.ZodError?400:503).send({error:e instanceof FactoryError?e.message:e instanceof z.ZodError?'Перевір заповнені поля.':'Операцію не підтверджено. Онови стан перед повтором. Перевір підключення R2 та бази.'}));
   await app.register(multipart,{limits:{files:1,fields:0,parts:1,fileSize:UPLOAD_MAX}});
-  app.addHook('onClose',async()=>{controller.abort();await Promise.allSettled([...tasks]);});
+  app.addHook('onClose',async()=>{for(const controller of jobs.values())controller.abort();await Promise.allSettled([...tasks]);});
   app.get('/factory',async(_req,reply)=>reply.type('text/html').send(factoryPage));
   app.get('/factory/style.css',async(_req,reply)=>reply.type('text/css').send(factoryCss+factoryChannelCss));
   app.get('/factory/app.js',async(_req,reply)=>reply.type('application/javascript').send(factoryScript));
@@ -199,6 +199,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     });
   });
   function workShort(release:Record<string,any>){
+    const controller=new AbortController();jobs.set(release.id,controller);
     const task=(async()=>{let dir:string|undefined,lastWrite=0;
       const progress=(value:number)=>{const now=Date.now();if(value<99&&now-lastWrite<1500)return;lastWrite=now;void requirePool().query("UPDATE factory_releases SET short_progress=$2,short_updated_at=NOW() WHERE id=$1 AND short_state='rendering'",[release.id,Math.max(1,Math.min(99,Math.round(value)))]).catch(()=>{});};
       try{
@@ -218,7 +219,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
         progress(94);await s.put(output.object_key,result,'video/mp4');
         await factoryLock(async db=>{await db.query("UPDATE factory_assets SET state='ready',bytes=$2 WHERE id=$1",[output.id,result.length]);await db.query("UPDATE factory_releases SET short_state='review',short_progress=100,short_error=NULL,short_updated_at=NOW() WHERE id=$1 AND short_state='rendering'",[release.id]);});
       }catch(error){app.log.error({releaseId:release.id},'Factory Shorts failed');await requirePool().query("UPDATE factory_releases SET short_state='failed',short_error='Не вдалося скласти Shorts. Матеріали збережено — можна повторити без генерації нової картинки.',short_updated_at=NOW() WHERE id=$1 AND short_state='rendering'",[release.id]).catch(()=>{});}
-      finally{if(dir)await rm(dir,{recursive:true,force:true});}
+      finally{if(jobs.get(release.id)===controller)jobs.delete(release.id);if(dir)await rm(dir,{recursive:true,force:true});}
     })();tasks.add(task);void task.finally(()=>tasks.delete(task));
   }
   app.post('/api/factory/releases/:id/shorts',async(req,reply)=>{
@@ -234,7 +235,19 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     });
     if(fresh)workShort(release);return reply.code(fresh?202:200).send({id,shortState:release.short_state});
   });
+  app.post('/api/factory/releases/:id/cancel',async req=>{
+    const id=uuid.parse((req.params as {id:string}).id);
+    const mode=await factoryLock(async db=>{
+      const release=(await db.query('SELECT state,short_state FROM factory_releases WHERE id=$1 FOR UPDATE',[id])).rows[0];
+      if(!release)throw new FactoryError(404,'Випуск не знайдено.');
+      if(release.state==='rendering'){await db.query("UPDATE factory_releases SET state='failed',stage='interrupted',progress_detail='Процес скасовано вручну.',error='Монтаж скасовано. Можна повторити з одним образом і тими самими матеріалами.',updated_at=NOW() WHERE id=$1",[id]);return 'video';}
+      if(release.short_state==='rendering'){await db.query("UPDATE factory_releases SET short_state='failed',short_error='Створення Shorts скасовано. Можна безпечно повторити.',short_updated_at=NOW() WHERE id=$1",[id]);return 'shorts';}
+      throw new FactoryError(409,'Активного процесу для скасування немає.');
+    });
+    jobs.get(id)?.abort();return {cancelled:true,mode};
+  });
   function work(release:Record<string,any>){
+    const controller=new AbortController();jobs.set(release.id,controller);
     const task=(async()=>{
       let dir:string|undefined,stage='preparing',progress=Number(release.progress)||2,lastStage='',lastProgress=-1,lastWrite=0;
       let writes=Promise.resolve();
@@ -304,7 +317,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
         const reason=error instanceof MediaToolError?error.reason:'operation';
         app.log.error({releaseId:release.id,stage,reason},'Factory release failed');
         await requirePool().query("UPDATE factory_releases SET state='failed',stage=$2,progress=$3,progress_detail='Зупинено на цьому етапі.',error=$4,updated_at=NOW() WHERE id=$1 AND state='rendering'",[release.id,stage,progress,failure(error)]).catch(()=>{});
-      }finally{if(dir)await rm(dir,{recursive:true,force:true});}
+      }finally{if(jobs.get(release.id)===controller)jobs.delete(release.id);if(dir)await rm(dir,{recursive:true,force:true});}
     })();tasks.add(task);void task.finally(()=>tasks.delete(task));
   }
   app.post('/api/factory/releases',async(req,reply)=>{
