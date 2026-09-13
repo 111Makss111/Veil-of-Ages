@@ -6,6 +6,7 @@ import { compareSong, composePrompt, lyricHash, PROMPT_VERSION, seedProfiles, ty
 export const songsMigration = `
 CREATE TABLE IF NOT EXISTS song_profiles(id TEXT PRIMARY KEY, settings JSONB NOT NULL, revision INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS song_projects(id UUID PRIMARY KEY, name TEXT NOT NULL, profile_id TEXT NOT NULL REFERENCES song_profiles(id), brief TEXT NOT NULL, approved_version UUID, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+ALTER TABLE song_projects ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 CREATE TABLE IF NOT EXISTS song_runs(id UUID PRIMARY KEY, project_id UUID NOT NULL REFERENCES song_projects(id), request_key UUID UNIQUE NOT NULL, state TEXT NOT NULL CHECK(state IN ('running','complete','failed','uncertain')), snapshot JSONB NOT NULL, prompt TEXT NOT NULL, model TEXT NOT NULL, error TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), finished_at TIMESTAMPTZ);
 CREATE UNIQUE INDEX IF NOT EXISTS song_one_running ON song_runs ((state)) WHERE state='running';
 CREATE TABLE IF NOT EXISTS song_versions(id UUID PRIMARY KEY, project_id UUID NOT NULL REFERENCES song_projects(id), run_id UUID UNIQUE REFERENCES song_runs(id), content JSONB NOT NULL, lyric_hash TEXT NOT NULL, matches JSONB NOT NULL DEFAULT '[]', decision TEXT NOT NULL DEFAULT 'review' CHECK(decision IN ('review','approved','rejected')), input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
@@ -35,7 +36,7 @@ export async function startRun(projectId: string, requestKey: string, model: str
       if (existing.project_id !== projectId) throw new SongError(409, 'Цей ключ запуску належить іншому проєкту.');
       return { run: existing, fresh: false };
     }
-    const project = (await db.query('SELECT p.*,s.settings,s.revision FROM song_projects p JOIN song_profiles s ON s.id=p.profile_id WHERE p.id=$1 FOR UPDATE OF p', [projectId])).rows[0];
+    const project = (await db.query('SELECT p.*,s.settings,s.revision FROM song_projects p JOIN song_profiles s ON s.id=p.profile_id WHERE p.id=$1 AND p.deleted_at IS NULL FOR UPDATE OF p', [projectId])).rows[0];
     if (!project) throw new SongError(404, 'Проєкт не знайдено.');
     if (project.approved_version) throw new SongError(409, 'Проєкт уже затверджено. Створіть новий проєкт для іншої пісні.');
     if ((await db.query("SELECT id FROM song_runs WHERE state='running'")).rowCount) throw new SongError(409, 'Уже працює генерація. Дочекайтеся результату.');
@@ -72,7 +73,7 @@ export async function finishRun(runId: string, song: Song, inputTokens: number, 
 }
 export async function decideVersion(projectId: string, versionId: string, decision: 'approved' | 'rejected') {
   await transaction(async db => {
-    const project = (await db.query('SELECT id FROM song_projects WHERE id=$1 FOR UPDATE', [projectId])).rows[0];
+    const project = (await db.query('SELECT id FROM song_projects WHERE id=$1 AND deleted_at IS NULL FOR UPDATE', [projectId])).rows[0];
     if (!project) throw new SongError(404, 'Проєкт не знайдено.');
     if ((await db.query("SELECT id FROM song_runs WHERE project_id=$1 AND state='running'", [projectId])).rowCount) throw new SongError(409, 'Дочекайтеся завершення генерації.');
     const version = (await db.query('SELECT * FROM song_versions WHERE id=$1 AND project_id=$2', [versionId, projectId])).rows[0];
@@ -83,5 +84,17 @@ export async function decideVersion(projectId: string, versionId: string, decisi
       await db.query('UPDATE song_projects SET approved_version=$2 WHERE id=$1', [projectId, versionId]);
     } else await db.query('UPDATE song_projects SET approved_version=NULL WHERE id=$1 AND approved_version=$2', [projectId, versionId]);
     await db.query('UPDATE song_versions SET decision=$2 WHERE id=$1', [versionId, decision]);
+  });
+}
+
+export async function deleteSongProject(projectId: string) {
+  return transaction(async db => {
+    const project = (await db.query('SELECT id,name FROM song_projects WHERE id=$1 AND deleted_at IS NULL FOR UPDATE', [projectId])).rows[0];
+    if (!project) throw new SongError(404, 'Проєкт не знайдено.');
+    if ((await db.query("SELECT id FROM song_runs WHERE project_id=$1 AND state='running'", [projectId])).rowCount) {
+      throw new SongError(409, 'Дочекайтеся завершення генерації перед видаленням.');
+    }
+    await db.query('UPDATE song_projects SET deleted_at=NOW() WHERE id=$1', [projectId]);
+    return { id: project.id as string, name: project.name as string };
   });
 }

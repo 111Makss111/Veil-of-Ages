@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { requirePool } from './db.js';
 import { ownerOrigin } from './owner-auth.js';
 import { profileSchema } from './songs-domain.js';
-import { SongError, decideVersion, expireRuns, finishRun, startRun } from './songs-store.js';
+import { SongError, decideVersion, deleteSongProject, expireRuns, finishRun, startRun } from './songs-store.js';
 import { generateSong, generatorConfig } from './songs-provider.js';
 import { songsPage, songsCss, songsScript } from './songs-ui.js';
 
@@ -20,7 +20,7 @@ export async function songsRoutes(app: FastifyInstance) {
     reply.header('Cache-Control', 'no-store').header('X-Content-Type-Options', 'nosniff').header('Referrer-Policy', 'same-origin')
       .header('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
     if (!request.ownerSession?.verified) return reply.code(401).send({ error: 'Увійдіть у кабінет та підтвердьте Authenticator.' });
-    if (request.method === 'POST' && request.headers.origin !== ownerOrigin()) return reply.code(403).send({ error: 'Відкрийте проєкт зі свого кабінету.' });
+    if (!['GET','HEAD','OPTIONS'].includes(request.method) && request.headers.origin !== ownerOrigin()) return reply.code(403).send({ error: 'Відкрийте проєкт зі свого кабінету.' });
   });
   app.setErrorHandler((error, _request, reply) => {
     const status = error instanceof SongError ? error.status : error instanceof z.ZodError ? 400 : 503;
@@ -52,7 +52,7 @@ export async function songsRoutes(app: FastifyInstance) {
     const result = await requirePool().query(`SELECT p.*, s.settings->>'name' AS profile_name,
       (SELECT COUNT(*)::int FROM song_versions v WHERE v.project_id=p.id) AS versions,
       (SELECT state FROM song_runs r WHERE r.project_id=p.id ORDER BY r.created_at DESC LIMIT 1) AS last_state
-      FROM song_projects p JOIN song_profiles s ON s.id=p.profile_id ORDER BY p.created_at DESC,p.id LIMIT 21 OFFSET $1`, [offset]);
+      FROM song_projects p JOIN song_profiles s ON s.id=p.profile_id WHERE p.deleted_at IS NULL ORDER BY p.created_at DESC,p.id LIMIT 21 OFFSET $1`, [offset]);
     return { projects: result.rows.slice(0,20), hasMore: result.rows.length > 20 };
   });
   app.post('/api/songs/projects', { bodyLimit: 10000, logLevel: 'silent' }, async request => {
@@ -66,7 +66,7 @@ export async function songsRoutes(app: FastifyInstance) {
   app.get('/api/songs/projects/:id', async request => {
     const { id } = idSchema.parse(request.params);
     await expireRuns();
-    const project = (await requirePool().query('SELECT * FROM song_projects WHERE id=$1', [id])).rows[0];
+    const project = (await requirePool().query('SELECT * FROM song_projects WHERE id=$1 AND deleted_at IS NULL', [id])).rows[0];
     if (!project) throw new SongError(404, 'Проєкт не знайдено.');
     const versions = (await requirePool().query('SELECT v.*,r.model,r.snapshot FROM song_versions v LEFT JOIN song_runs r ON r.id=v.run_id WHERE v.project_id=$1 ORDER BY v.created_at DESC', [id])).rows;
     const runs = (await requirePool().query('SELECT id,request_key,state,error,model,created_at,finished_at FROM song_runs WHERE project_id=$1 ORDER BY created_at DESC LIMIT 20', [id])).rows;
@@ -98,5 +98,10 @@ export async function songsRoutes(app: FastifyInstance) {
     const body = z.object({ versionId: z.uuid(), decision: z.enum(['approved','rejected']) }).strict().parse(request.body);
     await decideVersion(id, body.versionId, body.decision);
     return { ok: true };
+  });
+  app.delete('/api/songs/projects/:id', { bodyLimit: 2048, logLevel: 'silent' }, async request => {
+    const { id } = idSchema.parse(request.params);
+    z.object({ confirmation: z.literal('DELETE') }).strict().parse(request.body);
+    return { deleted: await deleteSongProject(id) };
   });
 }

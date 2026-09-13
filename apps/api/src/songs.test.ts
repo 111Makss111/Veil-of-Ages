@@ -13,7 +13,7 @@ process.env.R2_ACCOUNT_ID = '1234567890abcdef1234567890abcdef';
 process.env.CLOUDFLARE_AI_TOKEN = 'test-only-cloudflare-token-do-not-use';
 process.env.SONG_DAILY_LIMIT = '10';
 const { pool } = await import('./db.js');
-const { songsMigration, seedSongs, startRun, finishRun, decideVersion } = await import('./songs-store.js');
+const { songsMigration, seedSongs, startRun, finishRun, decideVersion, deleteSongProject } = await import('./songs-store.js');
 const { songsRoutes } = await import('./songs.js');
 const { generateSong } = await import('./songs-provider.js');
 const song: Song = {
@@ -71,6 +71,11 @@ test('durable projects: snapshot, idempotency, duplicates, approval, limits and 
     const create=()=>app.inject({method:'POST',url:'/api/songs/projects',headers,payload:body});
     assert.equal((await create()).statusCode,200);assert.equal((await create()).statusCode,200);
     assert.equal((await db.query('SELECT * FROM song_projects')).rows.length,2);
+    const removedId=randomUUID(),removedBody={...body,id:removedId,name:'Temporary idea'};
+    assert.equal((await post('/api/songs/projects',removedBody)).statusCode,200);
+    assert.equal((await app.inject({method:'DELETE',url:'/api/songs/projects/'+removedId,headers:{origin:'https://evil.test'},payload:{confirmation:'DELETE'}})).statusCode,403);
+    assert.equal((await app.inject({method:'DELETE',url:'/api/songs/projects/'+removedId,headers,payload:{confirmation:'DELETE'}})).statusCode,200);
+    assert.equal((await app.inject('/api/songs/projects/'+removedId)).statusCode,404);
     const firstKey=randomUUID();const claimed=await startRun(projectId,firstKey,'test-model',10);
     const snapshot=claimed.run.snapshot;
     const concurrent=await Promise.all([startRun(projectId,firstKey,'test-model',10),startRun(projectId,firstKey,'test-model',10)]);
@@ -109,6 +114,10 @@ test('durable projects: snapshot, idempotency, duplicates, approval, limits and 
     assert.equal((await generate()).json().reused,true);assert.equal(calls,1);releaseProvider();
     await app.close();
     const finished=await db.query<{state:string}>('SELECT state FROM song_runs WHERE request_key=$1',[key]);assert.equal(finished.rows[0]!.state,'complete');
+    const retainedBefore=(await db.query('SELECT id FROM song_versions WHERE project_id=$1',[projectId])).rows.length;
+    await deleteSongProject(projectId);
+    assert.ok((await db.query<{deleted_at:Date|null}>('SELECT deleted_at FROM song_projects WHERE id=$1',[projectId])).rows[0]!.deleted_at);
+    assert.equal((await db.query('SELECT id FROM song_versions WHERE project_id=$1',[projectId])).rows.length,retainedBefore);
     delete process.env.CLOUDFLARE_AI_TOKEN;
     await assert.rejects(generateSong('prompt',new AbortController().signal),/CLOUDFLARE_AI_TOKEN/);
     process.env.CLOUDFLARE_AI_TOKEN='test-only-cloudflare-token-do-not-use';
