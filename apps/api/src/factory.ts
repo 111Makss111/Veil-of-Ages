@@ -57,7 +57,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
       db.query('SELECT * FROM factory_channels WHERE active=TRUE ORDER BY created_at,id'),
       db.query('SELECT * FROM factory_containers ORDER BY position,name'),
       db.query('SELECT channel_id,container_id FROM factory_channel_containers ORDER BY channel_id,container_id'),
-      db.query('SELECT * FROM factory_song_ideas ORDER BY created_at DESC LIMIT 20')
+      db.query('SELECT * FROM factory_song_ideas WHERE dismissed_at IS NULL ORDER BY created_at DESC LIMIT 20')
     ]);
     const availableByChannel:Record<string,Record<string,number>>={};for(const r of counts.rows)(availableByChannel[r.channel_id]??={})[r.vocal]=Number(r.available);
     return {configured:!!storage,aiConfigured:!!imageGenerator,imageAiProvider:configuredImageProvider,textAiConfigured:textGeneratorConfigured(),textAiProvider:textGeneratorProvider(),recipe:recipe.rows[0],effects:EFFECT_CATALOG,assets:assets.rows,releases:releases.rows,ideas:ideas.rows,channels:channels.rows,containers:containers.rows,channelContainers:channelContainers.rows,availableByChannel,availableByVocal:Object.fromEntries(counts.rows.filter(r=>r.channel_id==='veil-of-ages').map(r=>[r.vocal,Number(r.available)])),limit:STORAGE_LIMIT,inputLimit:INPUT_LIMIT};
@@ -67,6 +67,12 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     return createSongIdea(body.channelId,body.mode,body.brief,AbortSignal.timeout(90000));
   });
   app.post('/api/factory/ideas/:id/approve',async req=>approveSongIdea(uuid.parse((req.params as {id:string}).id)));
+  app.post('/api/factory/ideas/:id/dismiss',async req=>{
+    const id=uuid.parse((req.params as {id:string}).id);
+    const idea=(await requirePool().query("UPDATE factory_song_ideas SET dismissed_at=NOW(),updated_at=NOW() WHERE id=$1 AND state<>'generating' AND dismissed_at IS NULL RETURNING id",[id])).rows[0];
+    if(!idea)throw new FactoryError(409,'Цей задум зараз не можна відкласти. Онови сторінку.');
+    return {dismissed:true};
+  });
   app.get('/api/factory/storage',async()=>{
     const s=needStorage();
     return factoryLock(async db=>{
@@ -112,7 +118,21 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
       const savedName=content?content.title.replace(/[<>\x00-\x1f]/g,'').slice(0,135)+(kind==='mp3'?'.mp3':'.wav'):originalName;
       const {asset,fresh}=await reserveAsset(s,{...meta,hash:createHash('sha256').update(data).digest('hex'),name:savedName,bytes:data.length,type,duration});
       if(!fresh){
-        if(idea&&((await requirePool().query('SELECT id FROM factory_song_ideas WHERE audio_id=$1 AND id<>$2',[asset.id,idea.id])).rowCount||(await requirePool().query('SELECT id FROM factory_releases WHERE track_id=$1',[asset.id])).rowCount))throw new FactoryError(409,'Цей аудіофайл уже належить іншому запуску.');
+        if(idea){
+          if((await requirePool().query('SELECT id FROM factory_song_ideas WHERE audio_id=$1 AND id<>$2',[asset.id,idea.id])).rowCount)throw new FactoryError(409,'Цей аудіофайл уже належить іншому задуму. Відклади цей задум і почни нову пісню.');
+          const existingRelease=(await requirePool().query('SELECT id,title,recipe FROM factory_releases WHERE track_id=$1',[asset.id])).rows[0];
+          if(existingRelease){
+            const song=songPackageSchema.parse(idea.content),releaseIdea=existingRelease.recipe?.ideaId;
+            if(releaseIdea===idea.id||(!releaseIdea&&existingRelease.title===song.title)){
+              await factoryLock(async db=>{
+                await db.query('UPDATE factory_song_ideas SET audio_id=$2,updated_at=NOW() WHERE id=$1',[idea.id,asset.id]);
+                await db.query("UPDATE factory_releases SET recipe=jsonb_set(recipe,'{ideaId}',to_jsonb($2::text),true),updated_at=NOW() WHERE id=$1 AND recipe->>'ideaId' IS NULL",[existingRelease.id,idea.id]);
+              });
+              return {id:asset.id,duplicate:true,alreadyReleased:true,releaseId:existingRelease.id,ideaId:idea.id};
+            }
+            throw new FactoryError(409,'Цей аудіофайл уже належить іншому відео. Відклади цей задум і почни нову пісню.');
+          }
+        }
         if(asset.state!=='ready'){
           // A browser or service restart can lose the response after reservation. Repeating
           // the same file safely overwrites the same R2 key instead of trapping the song.

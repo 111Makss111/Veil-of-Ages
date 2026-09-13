@@ -12,8 +12,9 @@ CREATE TABLE IF NOT EXISTS factory_song_ideas(
  mode TEXT NOT NULL CHECK(mode IN ('viking-anthem','viking-rap-duet')),
  brief TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('generating','review','approved','failed')),
  content JSONB, lyric_hash TEXT, error TEXT, audio_id UUID REFERENCES factory_assets(id),
- created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), approved_at TIMESTAMPTZ
+ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), approved_at TIMESTAMPTZ, dismissed_at TIMESTAMPTZ
 );
+ALTER TABLE factory_song_ideas ADD COLUMN IF NOT EXISTS dismissed_at TIMESTAMPTZ;
 CREATE UNIQUE INDEX IF NOT EXISTS factory_one_song_generation ON factory_song_ideas((true)) WHERE state='generating';
 CREATE UNIQUE INDEX IF NOT EXISTS factory_song_lyrics_unique ON factory_song_ideas(lyric_hash) WHERE lyric_hash IS NOT NULL;
 `;
