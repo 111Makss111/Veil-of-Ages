@@ -129,6 +129,25 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     const thumbnail=await buildYoutubeThumbnail(await needStorage().get(cover.object_key,8*1024*1024),release.title);
     return reply.type('image/jpeg').header('Content-Disposition','inline').send(thumbnail);
   });
+  const attachYoutubeThumbnail=async(release:{id:string;title:string;cover_id:string},videoId:string,cookie:string)=>{
+    const cover=(await requirePool().query("SELECT object_key FROM factory_assets WHERE id=$1 AND kind='image' AND state='ready'",[release.cover_id])).rows[0];
+    if(!cover)throw new FactoryError(409,'Обкладинка випуску не знайдена.');
+    const source=await needStorage().get(cover.object_key,8*1024*1024);
+    const thumbnail=await buildYoutubeThumbnail(source,release.title);
+    const result=await app.inject({method:'POST',url:'/youtube/thumbnail?'+new URLSearchParams({videoId}),headers:{cookie,origin:ownerOrigin(),'content-type':'image/jpeg'},payload:thumbnail});
+    const data=result.json() as {error?:string};
+    if(result.statusCode!==200)throw new FactoryError(result.statusCode===502?502:409,data.error||'YouTube не підтвердив власну обкладинку.');
+  };
+  app.post('/api/factory/releases/:id/thumbnail',{logLevel:'silent'},async(req)=>{
+    const id=uuid.parse((req.params as {id:string}).id);
+    const release=(await requirePool().query("SELECT id,title,cover_id,video_id,state FROM factory_releases WHERE id=$1",[id])).rows[0];
+    if(!release)throw new FactoryError(404,'Випуск не знайдено.');
+    if(release.state!=='private'||!release.video_id)throw new FactoryError(409,'Спочатку відео має бути приватно завантажене на YouTube.');
+    try{await attachYoutubeThumbnail(release,release.video_id,req.headers.cookie??'');}
+    catch(error){const message=error instanceof FactoryError?error.message:'YouTube не підтвердив власну обкладинку.';await requirePool().query('UPDATE factory_releases SET error=$2,updated_at=NOW() WHERE id=$1',[id,message]);throw error;}
+    await requirePool().query('UPDATE factory_releases SET error=NULL,updated_at=NOW() WHERE id=$1',[id]);
+    return {thumbnailSet:true};
+  });
   const deleteConfirmation=z.object({confirmation:z.literal('DELETE')}).strict();
   const checkedKey=(asset:{id:string;object_key:string})=>{
     if(asset.object_key!==`factory/${asset.id}`)throw new FactoryError(409,'Файл має невідому адресу. Видалення зупинено для безпеки.');
@@ -264,14 +283,8 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
       const result=await app.inject({method:'POST',url:'/youtube/upload?'+new URLSearchParams({title:release.title,children:meta.children,synthetic:meta.synthetic,description:String(release.recipe?.youtubeDescription||'Original music release from Veil of Ages.'),tags:Array.isArray(release.recipe?.youtubeTags)?release.recipe.youtubeTags.join(','):''}),headers:{cookie:req.headers.cookie??'',origin:ownerOrigin(),'content-type':'video/mp4'},payload:file});
       const data=result.json();if(result.statusCode!==200||!data.videoId)throw Error('Upload not confirmed');
       let thumbnailWarning:string|null=null;
-      try{
-        const cover=(await requirePool().query("SELECT * FROM factory_assets WHERE id=$1 AND kind='image' AND state='ready'",[release.cover_id])).rows[0];
-        if(!cover)throw Error('Missing cover');
-        const source=await needStorage().get(cover.object_key,8*1024*1024);
-        const thumbnail=await buildYoutubeThumbnail(source,release.title);
-        const thumbnailResult=await app.inject({method:'POST',url:'/youtube/thumbnail?'+new URLSearchParams({videoId:data.videoId}),headers:{cookie:req.headers.cookie??'',origin:ownerOrigin(),'content-type':'image/jpeg'},payload:thumbnail});
-        if(thumbnailResult.statusCode!==200)throw Error('Thumbnail rejected');
-      }catch{thumbnailWarning='Відео завантажено приватно, але власну мініатюру не підтверджено. Додай її вручну в YouTube Studio.';}
+      try{await attachYoutubeThumbnail(release,data.videoId,req.headers.cookie??'');}
+      catch(error){thumbnailWarning=error instanceof FactoryError?error.message:'Відео завантажено приватно, але YouTube не підтвердив власну обкладинку.';}
       await requirePool().query("UPDATE factory_releases SET state='private',video_id=$2,error=$3,updated_at=NOW() WHERE id=$1",[id,data.videoId,thumbnailWarning]);return {videoId:data.videoId,thumbnailSet:!thumbnailWarning,warning:thumbnailWarning};
     }catch{
       await requirePool().query("UPDATE factory_releases SET state='uncertain',error='Передачу не підтверджено. Перевір YouTube Studio; автоматичний повтор заблоковано.',updated_at=NOW() WHERE id=$1",[id]);

@@ -41,6 +41,18 @@ test('generated artwork can be set as the private video thumbnail',async()=>{
   try{await setVideoThumbnail(png,'image/png','abcdefghijk','secret-token');assert.equal(called,true);}finally{globalThis.fetch=original;}
 });
 
+test('thumbnail upload retries while a new video is not yet visible to YouTube',async()=>{
+  const original=globalThis.fetch,jpg=Buffer.concat([Buffer.from([0xff,0xd8,0xff]),Buffer.alloc(40)]);let calls=0,waits=0;
+  globalThis.fetch=async()=>{calls++;return calls===1?new Response(JSON.stringify({error:{errors:[{reason:'videoNotFound'}]}}),{status:404}):new Response('{}',{status:200});};
+  try{await setVideoThumbnail(jpg,'image/jpeg','abcdefghijk','secret-token',async()=>{waits++;});assert.equal(calls,2);assert.equal(waits,1);}finally{globalThis.fetch=original;}
+});
+
+test('thumbnail permission errors explain channel verification without leaking provider details',async()=>{
+  const original=globalThis.fetch,jpg=Buffer.concat([Buffer.from([0xff,0xd8,0xff]),Buffer.alloc(40)]);
+  globalThis.fetch=async()=>new Response(JSON.stringify({error:{message:'private provider detail',errors:[{reason:'forbidden'}]}}),{status:403});
+  try{await assert.rejects(setVideoThumbnail(jpg,'image/jpeg','abcdefghijk','secret-token'),error=>error instanceof Error&&/Підтвердь канал/.test(error.message)&&!error.message.includes('private provider detail'));}finally{globalThis.fetch=original;}
+});
+
 test('untrusted upload destinations never receive the token or file', async () => {
   const original = globalThis.fetch;
   let calls = 0;

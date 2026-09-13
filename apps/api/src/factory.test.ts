@@ -18,6 +18,8 @@ const { factoryRoutes }=await import('./factory.js');
 
 test('factory browser script parses and storage fails closed without configuration',()=>{
   new Script(factoryScript);
+  assert.match(factoryScript,/video\.poster=thumbnailUrl/);
+  assert.match(factoryScript,/Повторити встановлення обкладинки/);
   const before=process.env.R2_ACCOUNT_ID;delete process.env.R2_ACCOUNT_ID;
   assert.equal(createObjectStore(),null);
   if(before)process.env.R2_ACCOUNT_ID=before;
@@ -54,8 +56,10 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
   const app=Fastify();let authorized=true;
   app.decorateRequest('ownerSession',undefined);app.addHook('onRequest',async req=>{if(authorized)req.ownerSession={token_hash:'test',google_sub:'test',verified:true,enrollment_encrypted:null};});
   app.addContentTypeParser('video/mp4',{parseAs:'buffer'},(_req,b,done)=>done(null,b));
-  let published=0;app.post('/youtube/upload',async req=>{published++;assert.equal((req.query as {children:string}).children,'no');return {videoId:'abcdefghijk'};});
-  await app.register(factoryRoutes,{storage,probe:async()=>120,imageGenerator:async()=>{generated++;return {data:Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),Buffer.alloc(80)]),type:'image/png'};},render:async(images:string|string[],_audio:string,out:string,_kind:string,_signal?:AbortSignal,_format?:'video'|'shorts',preset?:string,onProgress?:(p:{percent:number;seconds:number;duration:number})=>void)=>{renders++;renderSceneCounts.push(Array.isArray(images)?images.length:1);if(preset)renderPresets.push(preset);onProgress?.({percent:50,seconds:60,duration:120});if(renderFail)throw Error('test render interruption');await writeFile(out,Buffer.from('0000ftypisom-fake-render-test'));}});
+  app.addContentTypeParser('image/jpeg',{parseAs:'buffer'},(_req,b,done)=>done(null,b));
+  let published=0,thumbnails=0,rejectThumbnail=true;app.post('/youtube/upload',async req=>{published++;assert.equal((req.query as {children:string}).children,'no');return {videoId:'abcdefghijk'};});
+  app.post('/youtube/thumbnail',async(_req,reply)=>{thumbnails++;return rejectThumbnail?reply.code(409).send({error:'YouTube ще не підтвердив обкладинку.'}):{ok:true};});
+  await app.register(factoryRoutes,{storage,probe:async()=>120,imageGenerator:async()=>{generated++;return {data:Buffer.from('<svg width="1280" height="720" xmlns="http://www.w3.org/2000/svg"><rect width="1280" height="720" fill="#31513a"/></svg>'),type:'image/png'};},render:async(images:string|string[],_audio:string,out:string,_kind:string,_signal?:AbortSignal,_format?:'video'|'shorts',preset?:string,onProgress?:(p:{percent:number;seconds:number;duration:number})=>void)=>{renders++;renderSceneCounts.push(Array.isArray(images)?images.length:1);if(preset)renderPresets.push(preset);onProgress?.({percent:50,seconds:60,duration:120});if(renderFail)throw Error('test render interruption');await writeFile(out,Buffer.from('0000ftypisom-fake-render-test'));}});
   const headers={origin:'https://api.example.test'};
   const post=(url:string,payload:Record<string,unknown>)=>app.inject({method:'POST',url,headers,payload});
   const upload=(kind:string,body:Buffer,name:string)=>app.inject({method:'POST',url:'/api/factory/assets?kind='+kind+'&vocal=instrumental',headers:{...headers,'content-type':'multipart/form-data; boundary=testboundary'},payload:Buffer.concat([Buffer.from('--testboundary\r\nContent-Disposition: form-data; name="file"; filename="'+name+'"\r\nContent-Type: application/octet-stream\r\n\r\n'),body,Buffer.from('\r\n--testboundary--\r\n')])});
@@ -97,7 +101,8 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
     assert.equal((await post('/api/factory/assets/'+release.output_id+'/delete',{confirmation:'DELETE'})).statusCode,409);
     authorized=false;assert.equal((await app.inject('/api/factory/assets/'+release.output_id+'/file')).statusCode,401);authorized=true;
     assert.equal((await post('/api/factory/releases/'+id+'/publish',{children:'no',synthetic:'yes',rights:false})).statusCode,400);assert.equal(published,0);
-    const publish=await post('/api/factory/releases/'+id+'/publish',{children:'no',synthetic:'yes',rights:true});assert.equal(publish.statusCode,200,publish.body);assert.equal(published,1);
+    const publish=await post('/api/factory/releases/'+id+'/publish',{children:'no',synthetic:'yes',rights:true});assert.equal(publish.statusCode,200,publish.body);assert.equal(published,1);assert.equal(publish.json().thumbnailSet,false);assert.equal(thumbnails,1,publish.body);
+    rejectThumbnail=false;const thumbnailRetry=await post('/api/factory/releases/'+id+'/thumbnail',{});assert.equal(thumbnailRetry.statusCode,200,thumbnailRetry.body);assert.equal(thumbnailRetry.json().thumbnailSet,true);assert.equal(thumbnails,2);assert.equal(((await q('SELECT error FROM factory_releases WHERE id=$1',[id])).rows[0] as {error:string|null}).error,null);
     assert.equal((await post('/api/factory/releases/'+id+'/publish',{children:'no',synthetic:'yes',rights:true})).statusCode,409);assert.equal(published,1);
     const removed=await post('/api/factory/releases/'+id+'/delete',{confirmation:'DELETE'});assert.equal(removed.statusCode,200,removed.body);assert.equal((await q('SELECT * FROM factory_releases WHERE id=$1',[id])).rows.length,0);assert.equal((await q("SELECT * FROM factory_assets WHERE kind='audio' AND id=$1",[audio.json().id])).rows.length,1);assert.equal(deletes,4);
     assert.equal((await post('/api/factory/assets/'+audio.json().id+'/delete',{confirmation:'DELETE'})).statusCode,200);assert.equal(deletes,5);
