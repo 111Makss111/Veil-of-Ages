@@ -186,6 +186,34 @@ textarea {
 .idea-upload { padding-top: 18px; margin-top: 20px; border-top: 1px solid #c6eba71d; }
 .idea-upload input { max-width: 560px; }
 .release-thumbnail { display:block; width:min(100%,640px); aspect-ratio:16/9; object-fit:cover; margin:18px 0 5px; border-radius:10px; border:1px solid #c6eba724; }
+.release-details { margin: 0; }
+.release-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  list-style: none;
+  cursor: pointer;
+}
+.release-summary::-webkit-details-marker { display: none; }
+.release-summary-info { min-width: 0; }
+.release-summary-info h3 { margin: 0 0 7px; }
+.release-summary-info p { margin: 0; color: #8fa285; }
+.release-summary-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+.release-toggle {
+  min-width: 92px;
+  padding: 9px 13px;
+  color: #dff2cf;
+  background: #bde9980d;
+  border: 1px solid #bde9983d;
+  border-radius: 9px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 650;
+}
+.release-summary:hover .release-toggle { background: #bde99818; border-color: #bde99866; }
+.release-body { margin-top: 18px; padding-top: 18px; border-top: 1px solid #c6eba71d; }
+.release-body > :first-child { margin-top: 0; }
 .batch-launch { max-width: 1040px; }
 .batch-launch > summary { color: #a8bb9e; }
 .batch-launch .hero { margin-bottom: 0; }
@@ -194,5 +222,7 @@ textarea {
   .channel-dialog-shell { padding: 14px; }
   .container-choices { grid-template-columns: 1fr; }
   .steps-six { grid-template-columns: 1fr 1fr; }
+  .release-summary { grid-template-columns: 1fr; gap: 12px; }
+  .release-summary-actions { justify-content: space-between; }
 }
 `;

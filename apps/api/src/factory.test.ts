@@ -33,6 +33,9 @@ test('factory browser script parses and storage fails closed without configurati
   assert.doesNotMatch(factoryScript,/function ideas\(\)/);
   assert.match(factoryScript,/Скасувати процес/);
   assert.match(factoryScript,/ideas\.some\(idea=>idea\.state==='generating'\)/);
+  assert.match(factoryScript,/function compactReleaseCards/);
+  assert.match(factoryScript,/details\.open=needsAttention/);
+  assert.match(factoryScript,/Розгорнути/);
   const before=process.env.R2_ACCOUNT_ID;delete process.env.R2_ACCOUNT_ID;
   assert.equal(createObjectStore(),null);
   if(before)process.env.R2_ACCOUNT_ID=before;
