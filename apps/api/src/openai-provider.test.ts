@@ -1,7 +1,7 @@
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createOpenAIImageGenerator } from './factory-ai.js';
-import { buildOpenAISongRequest } from './factory-song.js';
+import { buildOpenAISongRequest, buildSongPrompt, isConciseSongTitle } from './factory-song.js';
 import { DEFAULT_OPENAI_IMAGE_MODEL, DEFAULT_OPENAI_TEXT_MODEL, openAIConfig, openAIRequest } from './openai-provider.js';
 
 const originalFetch=globalThis.fetch,originalKey=process.env.OPENAI_API_KEY,originalTextModel=process.env.OPENAI_TEXT_MODEL,originalImageModel=process.env.OPENAI_IMAGE_MODEL;
@@ -29,6 +29,16 @@ test('song generator asks Luna for a strict structured package',()=>{
   assert.equal(request.text.format.type,'json_schema');
   assert.equal(request.text.format.strict,true);
   assert.deepEqual(request.text.format.schema.required,['title','concept','lyrics','sunoPrompt','artworkPrompt']);
+  assert.equal(request.text.format.schema.properties.title.maxLength,48);
+});
+
+test('song generator requires a concise title instead of a plot summary',()=>{
+  const prompt=buildSongPrompt('viking-anthem','A winter homecoming',[]);
+  assert.match(prompt,/Title rules: 2-5 words/);
+  assert.match(prompt,/not a synopsis/);
+  assert.equal(isConciseSongTitle('Winter Bell'),true);
+  assert.equal(isConciseSongTitle('The Oath Beneath the White Stag'),false);
+  assert.equal(isConciseSongTitle('This Is A Complete Sentence.'),false);
 });
 
 test('OpenAI image generator requests Flare and decodes the returned JPEG',async()=>{
