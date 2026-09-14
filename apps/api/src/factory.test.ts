@@ -33,6 +33,9 @@ test('factory browser script parses and storage fails closed without configurati
   assert.doesNotMatch(factoryScript,/function ideas\(\)/);
   assert.match(factoryScript,/Скасувати процес/);
   assert.match(factoryScript,/ideas\.some\(idea=>idea\.state==='generating'\)/);
+  assert.match(factoryScript,/Згенерувати інший варіант/);
+  assert.match(factoryScript,/Скасувати задум/);
+  assert.match(factoryScript,/Попередній результат збережено в історії як відхилений/);
   assert.match(factoryScript,/function compactReleaseCards/);
   assert.match(factoryScript,/details\.open=needsAttention/);
   assert.match(factoryScript,/Розгорнути/);
