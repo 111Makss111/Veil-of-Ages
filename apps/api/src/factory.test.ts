@@ -39,6 +39,12 @@ test('factory browser script parses and storage fails closed without configurati
   assert.match(factoryScript,/Скасувати задум/);
   assert.match(factoryScript,/Попередній результат збережено в історії як відхилений/);
   assert.match(factoryScript,/function compactReleaseCards/);
+  assert.match(factoryScript,/function shortsClips/);
+  assert.match(factoryScript,/shorts-clip/);
+  assert.match(factoryScript,/clipForm/);
+  assert.match(factoryScript,/function notes/);
+  assert.match(factoryScript,/notesPending/);
+  assert.match(factoryScript,/noteForm'\)\.requestSubmit/);
   assert.match(factoryScript,/details\.open=needsAttention/);
   assert.match(factoryScript,/Розгорнути/);
   const before=process.env.R2_ACCOUNT_ID;delete process.env.R2_ACCOUNT_ID;
@@ -100,8 +106,12 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
   try{
     await db.exec(factoryMigration);await db.exec(factorySongMigration);
     authorized=false;assert.equal((await app.inject('/api/factory')).statusCode,401);authorized=true;
-    const factoryHtml=await app.inject('/factory');assert.match(factoryHtml.body,/\/factory\/icon\.svg/);const favicon=await app.inject('/factory/icon.svg');assert.equal(favicon.statusCode,200);assert.match(favicon.headers['content-type']||'',/image\/svg\+xml/);assert.match(favicon.body,/bde998/);
+    const factoryHtml=await app.inject('/factory');assert.match(factoryHtml.body,/\/factory\/icon\.svg/);assert.match(factoryHtml.body,/Тіллі Сміт: урок, що врятував пляж/);assert.match(factoryHtml.body,/Wan 2\.2 \+ ComfyUI/);assert.match(factoryHtml.body,/id="clipForm"/);assert.match(factoryHtml.body,/id="noteForm"/);const favicon=await app.inject('/factory/icon.svg');assert.equal(favicon.statusCode,200);assert.match(favicon.headers['content-type']||'',/image\/svg\+xml/);assert.match(favicon.body,/bde998/);
     assert.equal((await app.inject({method:'POST',url:'/api/factory/recipe',headers:{origin:'https://evil.test'},payload:{}})).statusCode,403);
+    const newNote=await post('/api/factory/notes',{text:'Зробити сильніший початок Shorts'});assert.equal(newNote.statusCode,201,newNote.body);assert.equal(newNote.json().completed,false);
+    const noteId=newNote.json().id;let noteState=(await app.inject('/api/factory')).json();assert.equal(noteState.notes[0].text,'Зробити сильніший початок Shorts');
+    const checkedNote=await post('/api/factory/notes/'+noteId+'/toggle',{completed:true});assert.equal(checkedNote.statusCode,200,checkedNote.body);assert.equal(checkedNote.json().completed,true);
+    const deletedNote=await post('/api/factory/notes/'+noteId+'/delete',{});assert.equal(deletedNote.statusCode,200,deletedNote.body);noteState=(await app.inject('/api/factory')).json();assert.equal(noteState.notes.length,0);
     const png=Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),Buffer.alloc(40)]),mp3=Buffer.from('ID3-this-is-an-isolated-test-audio');
     const image=await upload('image',png,'castle.png');assert.equal(image.statusCode,201,image.body);
     const audio=await upload('audio',mp3,'Castle.mp3');assert.equal(audio.statusCode,201,audio.body);
@@ -112,6 +122,9 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
     assert.equal((await post('/api/factory/releases',{requestKey:randomUUID(),channelId:'veil-of-ages'})).statusCode,409);
     await q("DELETE FROM factory_channel_containers WHERE channel_id='veil-of-ages'");await q("INSERT INTO factory_channel_containers(channel_id,container_id) VALUES('veil-of-ages','viking-anthem'),('veil-of-ages','viking-rap-duet')");
     const duplicate=await upload('audio',mp3,'Different name.mp3');assert.equal(duplicate.json().duplicate,true);assert.equal(puts,2);
+    const clipPayload=Buffer.concat([Buffer.from('--testboundary\r\nContent-Disposition: form-data; name="file"; filename="01-fjord.mp4"\r\nContent-Type: video/mp4\r\n\r\n'),Buffer.from('0000ftypisom-fake-short-clip'),Buffer.from('\r\n--testboundary--\r\n')]);
+    const clip=await app.inject({method:'POST',url:'/api/factory/assets?kind=video&theme='+encodeURIComponent('shorts-clip|01|wan-local|Дзвін під льодом'),headers:{...headers,'content-type':'multipart/form-data; boundary=testboundary'},payload:clipPayload});assert.equal(clip.statusCode,201,clip.body);
+    const clipRow=(await q('SELECT kind,type,theme FROM factory_assets WHERE id=$1',[clip.json().id])).rows[0] as {kind:string;type:string;theme:string};assert.deepEqual(clipRow,{kind:'video',type:'video/mp4',theme:'shorts-clip|01|wan-local|Дзвін під льодом'});
     assert.equal((await post('/api/factory/recipe',{vocal:'instrumental',motionIntensity:'cinematic',coverId:image.json().id,containerIds:['viking-anthem','viking-rap-duet'],revision:2})).statusCode,200);
     assert.equal(Number(((await q("SELECT COUNT(*) AS count FROM factory_channel_containers WHERE channel_id='veil-of-ages'")).rows[0] as {count:number}).count),2);
     assert.equal((await post('/api/factory/recipe',{vocal:'choir',motionIntensity:'expressive',coverId:image.json().id,revision:1})).statusCode,409);

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { Script } from 'node:vm';
 import Fastify from 'fastify';
-import { buildCinematicFilters, MAX_OUTPUT_BYTES, mediaKind, runMediaTool, MediaToolError, shortsClip } from './media-render.js';
+import { buildCinematicFilters, MAX_OUTPUT_BYTES, mediaKind, videoKind, runMediaTool, MediaToolError, shortsClip } from './media-render.js';
 import { mediaScript } from './media-ui.js';
 
 process.env.PUBLIC_API_URL = 'https://api.example.test';
@@ -15,6 +15,9 @@ test('supported file signatures and browser script syntax', () => {
   assert.equal(mediaKind(Buffer.from([137,80,78,71,13,10,26,10]), true), 'png');
   assert.equal(mediaKind(Buffer.from('ID3test'), false), 'mp3');
   assert.equal(mediaKind(Buffer.from('RIFF0000WAVE'), false), 'wav');
+  assert.equal(videoKind(Buffer.from('0000ftypisom')), 'mp4');
+  assert.equal(videoKind(Buffer.from([0x1a,0x45,0xdf,0xa3])), 'webm');
+  assert.throws(() => videoKind(Buffer.from('not-video')));
   assert.throws(() => mediaKind(Buffer.from('#EXTM3U\nhttps://example.com'), false));
   assert.throws(() => mediaKind(Buffer.from('<svg></svg>'), true));
   new Script(mediaScript);

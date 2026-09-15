@@ -42,6 +42,12 @@ CREATE TABLE IF NOT EXISTS factory_channel_containers (
  PRIMARY KEY(channel_id,container_id)
 );
 CREATE TABLE IF NOT EXISTS factory_schema_changes(id TEXT PRIMARY KEY,applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE TABLE IF NOT EXISTS factory_notes (
+ id UUID PRIMARY KEY, text TEXT NOT NULL,
+ completed BOOLEAN NOT NULL DEFAULT FALSE,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+ updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 WITH first_run AS (
  INSERT INTO factory_schema_changes(id) VALUES('veil-of-ages-viking-2026-09') ON CONFLICT DO NOTHING RETURNING id
 ), removed AS (
@@ -127,7 +133,7 @@ export async function capacity(db: Pick<PoolClient,'query'>, storage: ObjectStor
   if (actual + pending + bytes > (input ? INPUT_LIMIT : STORAGE_LIMIT)) throw new FactoryError(409, input ? 'Запас для нових матеріалів вичерпано. Залишаємо 2 ГБ для результатів. Нічого автоматично не видаляємо.' : 'Досягнуто ліміт фабрики 8 ГБ. Звільнення місця потребує твого рішення.');
   return { actual, pending };
 }
-export async function reserveAsset(storage: ObjectStore, data: { kind: 'audio'|'image'; hash: string; name: string; bytes: number; type: string; duration: number|null; theme: string; vocal: string; containerId?: string|null }) {
+export async function reserveAsset(storage: ObjectStore, data: { kind: 'audio'|'image'|'video'; hash: string; name: string; bytes: number; type: string; duration: number|null; theme: string; vocal: string; containerId?: string|null }) {
   return factoryLock(async db => {
     const existing = (await db.query('SELECT * FROM factory_assets WHERE kind=$1 AND hash=$2',[data.kind,data.hash])).rows[0];
     if (existing) {

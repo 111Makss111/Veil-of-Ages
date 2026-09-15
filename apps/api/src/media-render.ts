@@ -24,6 +24,12 @@ export function mediaKind(header: Buffer, image: boolean): string {
   throw new Error(image ? 'Потрібне зображення JPG або PNG.' : 'Потрібне аудіо MP3 або WAV.');
 }
 
+export function videoKind(header: Buffer): 'mp4'|'webm' {
+  if (header.toString('ascii', 4, 8) === 'ftyp') return 'mp4';
+  if (header.subarray(0, 4).equals(Buffer.from([0x1a,0x45,0xdf,0xa3]))) return 'webm';
+  throw new Error('Потрібен відеофрагмент MP4 або WebM.');
+}
+
 export function runMediaTool(binary: string, args: string[], timeout: number, signal?: AbortSignal, onStdout?: (chunk: string) => void, inactivityTimeout=0): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(binary, args, { shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
