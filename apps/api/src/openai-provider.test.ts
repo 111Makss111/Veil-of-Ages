@@ -48,4 +48,5 @@ test('OpenAI image generator requests Flare and decodes the returned JPEG',async
   const generator=createOpenAIImageGenerator();assert.ok(generator);
   const result=await generator!('Nordic scene',17);
   assert.equal(body.model,DEFAULT_OPENAI_IMAGE_MODEL);assert.equal(body.size,'1536x1024');assert.equal(result.type,'image/jpeg');assert.deepEqual(result.data,jpeg);
+  await generator!('Portrait Nordic scene',18,undefined,{format:'portrait'});assert.equal(body.size,'1024x1536');
 });

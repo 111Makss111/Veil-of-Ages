@@ -13,7 +13,7 @@ import { FactoryError, reserveAsset, startRelease, factoryLock, capacity } from 
 import { factoryPage, factoryCss, factoryScript } from './factory-ui.js';
 import { factoryFavicon } from './factory-favicon.js';
 import { factoryChannelCss } from './factory-channel-ui.js';
-import { createPreferredImageGenerator, imageGeneratorProvider, type ImageGenerator } from './factory-ai.js';
+import { buildShortsConcept, createPreferredImageGenerator, imageGeneratorProvider, MAX_GENERATED_IMAGE_BYTES, type ImageGenerator } from './factory-ai.js';
 import { ACTIVE_EFFECT_IDS, EFFECT_CATALOG, motionIntensitySchema } from './factory-effects.js';
 import { approveSongIdea, createSongIdea, textGeneratorConfigured, textGeneratorProvider } from './factory-song.js';
 import { songMode, songPackageSchema } from './factory-song-domain.js';
@@ -165,9 +165,9 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     return reply.type('image/jpeg').header('Content-Disposition','inline').send(thumbnail);
   });
   app.get('/api/factory/releases/:id/shorts-poster',{logLevel:'silent'},async(req,reply)=>{
-    const id=uuid.parse((req.params as {id:string}).id),release=(await requirePool().query('SELECT id,title,cover_id FROM factory_releases WHERE id=$1',[id])).rows[0];
+    const id=uuid.parse((req.params as {id:string}).id),release=(await requirePool().query('SELECT id,title,cover_id,short_cover_id FROM factory_releases WHERE id=$1',[id])).rows[0];
     if(!release)throw new FactoryError(404,'Випуск не знайдено.');
-    const cover=(await requirePool().query("SELECT object_key FROM factory_assets WHERE id=$1 AND kind='image' AND state='ready'",[release.cover_id])).rows[0];
+    const cover=(await requirePool().query("SELECT object_key FROM factory_assets WHERE id=$1 AND kind='image' AND state='ready'",[release.short_cover_id||release.cover_id])).rows[0];
     if(!cover)throw new FactoryError(409,'Обкладинка ще створюється.');
     return reply.type('image/jpeg').header('Content-Disposition','inline').send(await buildShortsArtwork(await needStorage().get(cover.object_key,8*1024*1024),release.title));
   });
@@ -204,7 +204,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     return factoryLock(async db=>{
       const asset=(await db.query('SELECT * FROM factory_assets WHERE id=$1 FOR UPDATE',[id])).rows[0];
       if(!asset)throw new FactoryError(404,'Матеріал уже видалено.');
-      if((await db.query('SELECT id FROM factory_releases WHERE track_id=$1 OR cover_id=$1 OR output_id=$1 OR short_output_id=$1 LIMIT 1',[id])).rowCount||(await db.query('SELECT release_id FROM factory_release_scenes WHERE asset_id=$1 LIMIT 1',[id])).rowCount)throw new FactoryError(409,'Матеріал використовується у випуску. Спочатку видали відповідний випуск.');
+      if((await db.query('SELECT id FROM factory_releases WHERE track_id=$1 OR cover_id=$1 OR output_id=$1 OR short_output_id=$1 OR short_cover_id=$1 LIMIT 1',[id])).rowCount||(await db.query('SELECT release_id FROM factory_release_scenes WHERE asset_id=$1 LIMIT 1',[id])).rowCount)throw new FactoryError(409,'Матеріал використовується у випуску. Спочатку видали відповідний випуск.');
       if((await db.query('SELECT id FROM factory_recipe WHERE cover_id=$1',[id])).rowCount)throw new FactoryError(409,'Цю картинку обрано в рецепті. Спочатку зміни резервну обкладинку в налаштуваннях.');
       await deleteStored(s,asset);await db.query('UPDATE factory_song_ideas SET audio_id=NULL,updated_at=NOW() WHERE audio_id=$1',[id]);await db.query('DELETE FROM factory_assets WHERE id=$1',[id]);
       return {deleted:true,freed:Number(asset.bytes)};
@@ -218,17 +218,19 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
       if(['rendering','publishing','uncertain'].includes(release.state)||release.short_state==='rendering'||['publishing','uncertain'].includes(release.short_publish_state))throw new FactoryError(409,'Цей випуск зараз не можна безпечно видалити. Дочекайся завершення або перевір результат передачі.');
       const output=(await db.query('SELECT * FROM factory_assets WHERE id=$1',[release.output_id])).rows[0];
       const shortOutput=release.short_output_id?(await db.query('SELECT * FROM factory_assets WHERE id=$1',[release.short_output_id])).rows[0]:null;
+      const shortCover=release.short_cover_id?(await db.query('SELECT * FROM factory_assets WHERE id=$1',[release.short_cover_id])).rows[0]:null;
       const generated=release.recipe?.coverMode==='ai';
       let scenes=generated?(await db.query('SELECT a.* FROM factory_release_scenes s JOIN factory_assets a ON a.id=s.asset_id WHERE s.release_id=$1 ORDER BY s.position',[id])).rows:[];
       if(generated&&!scenes.length){const legacyCover=(await db.query('SELECT * FROM factory_assets WHERE id=$1',[release.cover_id])).rows[0];if(legacyCover)scenes=[legacyCover];}
       const removableScenes=[];
       for(const scene of scenes){const inRecipe=!!(await db.query('SELECT id FROM factory_recipe WHERE cover_id=$1',[scene.id])).rowCount;if(!inRecipe)removableScenes.push(scene);}
-      if(output)await deleteStored(s,output);if(shortOutput)await deleteStored(s,shortOutput);for(const scene of removableScenes)await deleteStored(s,scene);
+      if(output)await deleteStored(s,output);if(shortOutput)await deleteStored(s,shortOutput);if(shortCover)await deleteStored(s,shortCover);for(const scene of removableScenes)await deleteStored(s,scene);
       await db.query('DELETE FROM factory_releases WHERE id=$1',[id]);
       if(output)await db.query('DELETE FROM factory_assets WHERE id=$1',[output.id]);
       if(shortOutput)await db.query('DELETE FROM factory_assets WHERE id=$1',[shortOutput.id]);
+      if(shortCover)await db.query('DELETE FROM factory_assets WHERE id=$1',[shortCover.id]);
       for(const scene of removableScenes)await db.query('DELETE FROM factory_assets WHERE id=$1',[scene.id]);
-      return {deleted:true,freed:Number(output?.bytes||0)+Number(shortOutput?.bytes||0)+removableScenes.reduce((sum,scene)=>sum+Number(scene.bytes||0),0),keptTrackId:release.track_id};
+      return {deleted:true,freed:Number(output?.bytes||0)+Number(shortOutput?.bytes||0)+Number(shortCover?.bytes||0)+removableScenes.reduce((sum,scene)=>sum+Number(scene.bytes||0),0),keptTrackId:release.track_id};
     });
   });
   function workShort(release:Record<string,any>){
@@ -237,34 +239,51 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
       const progress=(value:number)=>{const now=Date.now();if(value<99&&now-lastWrite<1500)return;lastWrite=now;void requirePool().query("UPDATE factory_releases SET short_progress=$2,short_updated_at=NOW() WHERE id=$1 AND short_state='rendering'",[release.id,Math.max(1,Math.min(99,Math.round(value)))]).catch(()=>{});};
       try{
         const s=needStorage();dir=await mkdtemp(join(tmpdir(),'veil-shorts-'));
-        const [track,cover,output]=await Promise.all([
+        const [track,cover,shortCover,output]=await Promise.all([
           requirePool().query("SELECT * FROM factory_assets WHERE id=$1 AND kind='audio' AND state='ready'",[release.track_id]).then(r=>r.rows[0]),
           requirePool().query("SELECT * FROM factory_assets WHERE id=$1 AND kind='image' AND state='ready'",[release.cover_id]).then(r=>r.rows[0]),
+          release.short_cover_id?requirePool().query("SELECT * FROM factory_assets WHERE id=$1 AND kind='image'",[release.short_cover_id]).then(r=>r.rows[0]):Promise.resolve(null),
           requirePool().query("SELECT * FROM factory_assets WHERE id=$1",[release.short_output_id]).then(r=>r.rows[0])
         ]);
         if(!track||!cover||!output)throw Error('Missing Shorts material');
         const audio=join(dir,'audio'),image=join(dir,'shorts.jpg'),video=join(dir,'shorts.mp4');
-        const [audioData,coverData]=await Promise.all([s.get(track.object_key,UPLOAD_MAX),s.get(cover.object_key,8*1024*1024)]);
-        await Promise.all([writeFile(audio,audioData),buildShortsArtwork(coverData,release.title).then(data=>writeFile(image,data))]);
-        progress(8);
+        const audioData=await s.get(track.object_key,UPLOAD_MAX);let artworkData:Buffer;
+        if(shortCover){
+          if(shortCover.state==='ready')artworkData=await s.get(shortCover.object_key,8*1024*1024);
+          else{
+            if(!imageGenerator)throw Error('Portrait image generator unavailable');
+            progress(5);const generated=await imageGenerator(String(release.short_cover_prompt),Number(release.short_cover_seed),controller.signal,{format:'portrait'});
+            await s.put(shortCover.object_key,generated.data,generated.type);artworkData=generated.data;
+            await requirePool().query("UPDATE factory_assets SET state='ready',bytes=$2,type=$3 WHERE id=$1",[shortCover.id,generated.data.length,generated.type]);
+          }
+        }else artworkData=await s.get(cover.object_key,8*1024*1024);
+        await Promise.all([writeFile(audio,audioData),buildShortsArtwork(artworkData,release.title).then(data=>writeFile(image,data))]);
+        progress(10);
         await (options.render??renderMedia)(image,audio,video,track.type==='audio/wav'?'wav':'mp3',controller.signal,'shorts',release.recipe.visualPreset,p=>progress(10+p.percent*.82),'cinematic',ACTIVE_EFFECT_IDS.filter(id=>id!=='story.three-scenes'&&id!=='transition.scene-crossfades'&&id!=='camera.center-push'));
         const result=await readFile(video);if(result.length>SHORTS_MAX_BYTES)throw Error('Shorts exceeds reservation');
         progress(94);await s.put(output.object_key,result,'video/mp4');
         await factoryLock(async db=>{await db.query("UPDATE factory_assets SET state='ready',bytes=$2 WHERE id=$1",[output.id,result.length]);await db.query("UPDATE factory_releases SET short_state='review',short_progress=100,short_error=NULL,short_updated_at=NOW() WHERE id=$1 AND short_state='rendering'",[release.id]);});
-      }catch(error){app.log.error({releaseId:release.id},'Factory Shorts failed');await requirePool().query("UPDATE factory_releases SET short_state='failed',short_error='Не вдалося скласти Shorts. Матеріали збережено — можна повторити без генерації нової картинки.',short_updated_at=NOW() WHERE id=$1 AND short_state='rendering'",[release.id]).catch(()=>{});}
+      }catch(error){app.log.error({releaseId:release.id},'Factory Shorts failed');const message=release.short_cover_id?'Не вдалося створити вертикальний образ або скласти Shorts. Натисни повтор — система збереже пісню та спробує образ 9:16 ще раз.':'Не вдалося скласти Shorts. Матеріали збережено — можна повторити.';await requirePool().query("UPDATE factory_releases SET short_state='failed',short_error=$2,short_updated_at=NOW() WHERE id=$1 AND short_state='rendering'",[release.id,message]).catch(()=>{});}
       finally{if(jobs.get(release.id)===controller)jobs.delete(release.id);if(dir)await rm(dir,{recursive:true,force:true});}
     })();tasks.add(task);void task.finally(()=>tasks.delete(task));
   }
   app.post('/api/factory/releases/:id/shorts',async(req,reply)=>{
-    needStorage();if(!options.render)await checkMediaTools();const id=uuid.parse((req.params as {id:string}).id);
+    needStorage();if(!options.render)await checkMediaTools();const id=uuid.parse((req.params as {id:string}).id),{regenerate}=z.object({regenerate:z.boolean().optional().default(false)}).strict().parse(req.body??{});
     const {release,fresh}=await factoryLock(async db=>{
       if((await db.query("SELECT id FROM factory_releases WHERE state='rendering' OR short_state='rendering'")).rowCount)throw new FactoryError(409,'Лінія вже монтує відео. Дочекайся завершення.');
       const current=(await db.query('SELECT * FROM factory_releases WHERE id=$1 FOR UPDATE',[id])).rows[0];
       if(!current||!['review','private'].includes(current.state))throw new FactoryError(409,'Shorts можна створити лише для готового повного випуску.');
-      if(current.short_state==='review')return {release:current,fresh:false};
+      if(current.short_state==='review'&&!regenerate)return {release:current,fresh:false};
+      if(regenerate&&current.short_publish_state)throw new FactoryError(409,'Цей Shorts уже передавався на YouTube. Не перезаписуємо його автоматично.');
       let outputId=current.short_output_id;
       if(!outputId){await capacity(db,needStorage(),SHORTS_MAX_BYTES);outputId=randomUUID();await db.query("INSERT INTO factory_assets(id,kind,hash,object_key,name,bytes,type,vocal,state) VALUES($1,'video',$2,$3,$4,$5,'video/mp4',$6,'reserved')",[outputId,'short:'+current.id,'factory/'+outputId,current.title+' · Shorts.mp4',SHORTS_MAX_BYTES,current.recipe.vocal]);}
-      const updated=(await db.query("UPDATE factory_releases SET short_output_id=$2,short_state='rendering',short_progress=1,short_error=NULL,short_started_at=NOW(),short_updated_at=NOW() WHERE id=$1 RETURNING *",[id,outputId])).rows[0];return {release:updated,fresh:true};
+      let shortCoverId=current.short_cover_id,shortPrompt=current.short_cover_prompt,shortSeed=current.short_cover_seed;
+      if(imageGenerator&&(regenerate||!shortCoverId)){
+        const concept=buildShortsConcept(randomUUID(),current.title,current.recipe);shortPrompt=concept.prompt;shortSeed=concept.seed;
+        if(shortCoverId)await db.query("UPDATE factory_assets SET hash=$2,bytes=$3,type='image/jpeg',state='reserved',theme=$4 WHERE id=$1",[shortCoverId,'short-ai:'+concept.hash,MAX_GENERATED_IMAGE_BYTES,'Dedicated Shorts portrait']);
+        else{await capacity(db,needStorage(),MAX_GENERATED_IMAGE_BYTES);shortCoverId=randomUUID();await db.query("INSERT INTO factory_assets(id,kind,hash,object_key,name,bytes,type,vocal,state,theme) VALUES($1,'image',$2,$3,$4,$5,'image/jpeg',$6,'reserved',$7)",[shortCoverId,'short-ai:'+concept.hash,'factory/'+shortCoverId,current.title+' · Shorts 9x16.jpg',MAX_GENERATED_IMAGE_BYTES,current.recipe.vocal,'Dedicated Shorts portrait']);}
+      }
+      const updated=(await db.query("UPDATE factory_releases SET short_output_id=$2,short_cover_id=$3,short_cover_prompt=$4,short_cover_seed=$5,short_state='rendering',short_progress=1,short_error=NULL,short_started_at=NOW(),short_updated_at=NOW() WHERE id=$1 RETURNING *",[id,outputId,shortCoverId,shortPrompt,shortSeed])).rows[0];return {release:updated,fresh:true};
     });
     if(fresh)workShort(release);return reply.code(fresh?202:200).send({id,shortState:release.short_state});
   });

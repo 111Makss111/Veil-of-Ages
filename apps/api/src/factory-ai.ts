@@ -7,7 +7,8 @@ export const GENERATED_SCENE_COUNT = 3;
 export type SceneConcept = { hash:string; prompt:string; seed:number; scene:string; label:string };
 export type ReleaseConcept = { hash: string; title: string; prompt: string; seed: number; scene: string; scenes:SceneConcept[] };
 export type SongVisualBrief = { title:string; concept:string; artworkPrompt:string };
-export type ImageGenerator = (prompt: string, seed: number, signal?: AbortSignal) => Promise<{ data: Buffer; type: 'image/jpeg'|'image/png' }>;
+export type ImageFormat = 'landscape'|'portrait';
+export type ImageGenerator = (prompt: string, seed: number, signal?: AbortSignal, options?:{format?:ImageFormat}) => Promise<{ data: Buffer; type: 'image/jpeg'|'image/png' }>;
 
 const places = ['a timber longhouse above a winter fjord','a mountain pass overlooking the northern sea','a black-sand shore beside a beached longship','a firelit oath circle beneath ancient pines','a cliff village facing an approaching storm','a frozen harbor at blue dawn','a high valley marked by weathered standing stones','a longship crossing a narrow misty fjord'];
 const subjects = ['two sworn brothers preparing to part','a weathered skald holding a carved lyre','a returning voyager facing the lights of home','an original shieldmaiden waiting beside the fire','a small crew raising their oars in silence','a lone mountain messenger carrying a broken banner','a father and grown son meeting after many winters','two original singers answering one another across the hall'];
@@ -44,18 +45,26 @@ export function buildReleaseConcept(trackHash: string, attempt = 0, creative?:So
   return {hash,title:title.slice(0,100),prompt:scenes[0]!.prompt,seed:scenes[0]!.seed,scene:scenes[0]!.scene,scenes};
 }
 
+export function buildShortsConcept(releaseKey:string,title:string,recipe:Record<string,unknown>={}){
+  const digest=createHash('sha256').update(`shorts:${releaseKey}:${title}`).digest();
+  const story=String(recipe.youtubeDescription||recipe.scene||'An original Viking song story in the Veil of Ages world.').replace(/#[\w-]+/g,' ').replace(/\s+/g,' ').trim().slice(0,900);
+  const prompt=`Create a brand-new dedicated vertical 9:16 key visual for a 30-second YouTube Shorts presentation of the original Veil of Ages song “${title}”. Story and mood: ${story}. Epic Nordic cinematic realism, historically inspired wool, leather, iron and weathered timber, forest-green, slate, charcoal and muted-gold palette, dramatic natural atmosphere, premium photographic depth. IMPORTANT PORTRAIT COMPOSITION: place the main adult Viking character or pair fully inside the central 55% of the frame; show complete faces, heads, shoulders and hands; never crop a person at the left or right edge; keep all important subjects inside a safe central area with generous scenery on both sides; preserve calm negative space at the top for the brand and across the lower third for the song title. One clear focal point, strong vertical depth from foreground to distant landscape. Completely original people and setting. No readable text, letters, logo, watermark, border, duplicate people, celebrity likeness or modern objects.`;
+  return {hash:createHash('sha256').update(prompt+releaseKey).digest('hex'),prompt,seed:digest.readUInt32BE(0)&0x7fffffff};
+}
+
 export function createCloudflareImageGenerator(): ImageGenerator | null {
   const account=(process.env.CLOUDFLARE_ACCOUNT_ID||process.env.R2_ACCOUNT_ID||'').trim();
   const token=(process.env.CLOUDFLARE_AI_TOKEN||'').trim();
   if(!/^[a-f0-9]{32}$/i.test(account)||token.length<20)return null;
-  return async(prompt,seed,signal)=>{
+  return async(prompt,seed,signal,options)=>{
     let lastStatus=0;
     for(let attempt=1;attempt<=3;attempt++){
       const controller=new AbortController();
       const abort=()=>controller.abort();signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)abort();
       const timer=setTimeout(()=>controller.abort(),90000);
       try{
-        const form=new FormData();form.set('prompt',prompt);form.set('width','1280');form.set('height','720');form.set('guidance','3.5');form.set('seed',String(seed));
+        const portrait=options?.format==='portrait';
+        const form=new FormData();form.set('prompt',prompt);form.set('width',portrait?'720':'1280');form.set('height',portrait?'1280':'720');form.set('guidance','3.5');form.set('seed',String(seed));
         const response=await fetch(`https://api.cloudflare.com/client/v4/accounts/${account}/ai/run/@cf/black-forest-labs/flux-2-klein-4b`,{method:'POST',headers:{Authorization:`Bearer ${token}`},body:form,signal:controller.signal});
         lastStatus=response.status;
         if(!response.ok){await response.body?.cancel();if(![429,500,502,503,504].includes(response.status))throw new Error(response.status===401||response.status===403?'Workers AI не прийняв токен або право AI Run.':`Workers AI відхилив запит (код ${response.status}).`);}
@@ -79,11 +88,11 @@ export function createCloudflareImageGenerator(): ImageGenerator | null {
 
 export function createOpenAIImageGenerator():ImageGenerator|null{
   const {configured,imageModel}=openAIConfig();if(!configured)return null;
-  return async(prompt,seed,signal)=>{
+  return async(prompt,seed,signal,options)=>{
     let lastError:unknown;
     for(let attempt=1;attempt<=3;attempt++){
       try{
-        const payload=await openAIRequest('images/generations',{model:imageModel,prompt:`${prompt}\nComposition variation reference: ${seed}.`,size:'1536x1024',quality:'medium',output_format:'jpeg'},signal,180000) as {data?:Array<{b64_json?:unknown}>};
+        const payload=await openAIRequest('images/generations',{model:imageModel,prompt:`${prompt}\nComposition variation reference: ${seed}.`,size:options?.format==='portrait'?'1024x1536':'1536x1024',quality:'medium',output_format:'jpeg'},signal,180000) as {data?:Array<{b64_json?:unknown}>};
         const encoded=payload.data?.[0]?.b64_json;
         if(typeof encoded!=='string'||encoded.length>MAX_GENERATED_IMAGE_BYTES*1.5)throw new OpenAIProviderError('OpenAI не повернув готову картинку.',503,false);
         const data=Buffer.from(encoded,'base64');if(data.length<16||data.length>MAX_GENERATED_IMAGE_BYTES)throw new OpenAIProviderError('Згенерована картинка має неправильний розмір.',503,false);
@@ -103,8 +112,8 @@ export const imageGeneratorProvider=()=>openAIConfig().configured?'OpenAI':creat
 export function createPreferredImageGenerator():ImageGenerator|null{
   const openai=createOpenAIImageGenerator(),cloudflare=createCloudflareImageGenerator();
   if(!openai)return cloudflare;if(!cloudflare)return openai;
-  return async(prompt,seed,signal)=>{
-    try{return await openai(prompt,seed,signal);}
-    catch(error){if(!(error instanceof OpenAIProviderError)||!error.retryable)throw error;return cloudflare(prompt,seed,signal);}
+  return async(prompt,seed,signal,options)=>{
+    try{return await openai(prompt,seed,signal,options);}
+    catch(error){if(!(error instanceof OpenAIProviderError)||!error.retryable)throw error;return cloudflare(prompt,seed,signal,options);}
   };
 }

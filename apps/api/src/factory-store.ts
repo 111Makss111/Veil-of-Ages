@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS factory_releases (
  state TEXT NOT NULL CHECK(state IN ('rendering','review','failed','publishing','private','uncertain')),
  error TEXT, video_id TEXT, progress INTEGER NOT NULL DEFAULT 0, stage TEXT NOT NULL DEFAULT 'queued', progress_detail TEXT NOT NULL DEFAULT '',
  started_at TIMESTAMPTZ, render_started_at TIMESTAMPTZ, processed_seconds DOUBLE PRECISION, render_duration DOUBLE PRECISION,
- short_output_id UUID REFERENCES factory_assets(id), short_state TEXT CHECK(short_state IN ('rendering','review','failed')),
+ short_output_id UUID REFERENCES factory_assets(id), short_cover_id UUID REFERENCES factory_assets(id), short_cover_prompt TEXT, short_cover_seed BIGINT, short_state TEXT CHECK(short_state IN ('rendering','review','failed')),
  short_error TEXT, short_progress INTEGER NOT NULL DEFAULT 0, short_started_at TIMESTAMPTZ, short_updated_at TIMESTAMPTZ,
  short_publish_state TEXT CHECK(short_publish_state IN ('publishing','private','uncertain')), short_video_id TEXT, short_publish_error TEXT,
  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -95,6 +95,9 @@ ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS render_started_at TIMESTAM
 ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS processed_seconds DOUBLE PRECISION;
 ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS render_duration DOUBLE PRECISION;
 ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_output_id UUID REFERENCES factory_assets(id);
+ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_cover_id UUID REFERENCES factory_assets(id);
+ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_cover_prompt TEXT;
+ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_cover_seed BIGINT;
 ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_state TEXT CHECK(short_state IN ('rendering','review','failed'));
 ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_error TEXT;
 ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_progress INTEGER NOT NULL DEFAULT 0;

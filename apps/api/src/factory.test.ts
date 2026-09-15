@@ -12,7 +12,7 @@ process.env.DATABASE_URL='postgresql://test:test@localhost/test';
 process.env.PUBLIC_API_URL='https://api.example.test';
 const { pool }=await import('./db.js');
 const { chooseVisualPreset, factoryMigration, reserveAsset }=await import('./factory-store.js');
-const { buildReleaseConcept }=await import('./factory-ai.js');
+const { buildReleaseConcept,buildShortsConcept }=await import('./factory-ai.js');
 const { factorySongMigration }=await import('./factory-song.js');
 const { buildYoutubeThumbnail,buildShortsArtwork }=await import('./factory-thumbnail.js');
 const { factoryRoutes }=await import('./factory.js');
@@ -23,6 +23,8 @@ test('factory browser script parses and storage fails closed without configurati
   assert.match(factoryScript,/Повторити встановлення обкладинки/);
   assert.match(factoryScript,/Створити Shorts на 30 секунд/);
   assert.match(factoryScript,/Опублікувати саме Shorts/);
+  assert.match(factoryScript,/Створити інший вертикальний образ/);
+  assert.match(factoryScript,/безпечній центральній зоні/);
   assert.match(factoryScript,/Завантажити повне відео приватно на YouTube/);
   assert.match(factoryScript,/form\.hidden=!!active/);
   assert.match(factoryScript,/Копіювати назву/);
@@ -58,6 +60,11 @@ test('factory creates a stable three-part visual story',()=>{
   assert.deepEqual(concept,buildReleaseConcept('ab'.repeat(32)));
 });
 
+test('factory asks for a dedicated safe portrait composition for Shorts',()=>{
+  const concept=buildShortsConcept('release-1','Gold Beneath the Snow',{youtubeDescription:'Two travelers return to a winter fjord. #Shorts'});
+  assert.match(concept.prompt,/vertical 9:16/);assert.match(concept.prompt,/central 55%/);assert.match(concept.prompt,/never crop a person/);assert.doesNotMatch(concept.prompt,/#Shorts/);
+});
+
 test('factory builds a bounded branded YouTube thumbnail',async()=>{
   const source=Buffer.from('<svg width="1280" height="720" xmlns="http://www.w3.org/2000/svg"><rect width="1280" height="720" fill="#31513a"/></svg>');
   const thumbnail=await buildYoutubeThumbnail(source,'Oath Beneath the Winter Mountain');
@@ -76,7 +83,7 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
   const q=async(sql:string,args?:unknown[])=>{const r=await db.query(sql,args);return {...r,rowCount:r.affectedRows||r.rows.length};};
   pool!.query=q as typeof originalQuery;
   let tail=Promise.resolve();pool!.connect=(async()=>{const before=tail;let release!:()=>void;tail=new Promise<void>(r=>release=r);await before;return {query:q,release};}) as typeof originalConnect;
-  const objects=new Map<string,Buffer>();let otherBytes=0,puts=0,deletes=0,failPut=false,renderFail=true,renders=0,generated=0;const renderPresets:string[]=[],renderSceneCounts:number[]=[],renderFormats:string[]=[];
+  const objects=new Map<string,Buffer>();let otherBytes=0,puts=0,deletes=0,failPut=false,renderFail=true,renders=0,generated=0;const renderPresets:string[]=[],renderSceneCounts:number[]=[],renderFormats:string[]=[],imageFormats:string[]=[];
   const storage:ObjectStore={usage:async()=>otherBytes+[...objects.values()].reduce((n,b)=>n+b.length,0),put:async(k,b)=>{puts++;if(failPut)throw Error('secret never leak');objects.set(k,b);},get:async(k,max)=>{const b=objects.get(k);if(!b||b.length>max)throw Error('not found');return b;},delete:async k=>{deletes++;objects.delete(k);}};
   const app=Fastify();let authorized=true;
   app.decorateRequest('ownerSession',undefined);app.addHook('onRequest',async req=>{if(authorized)req.ownerSession={token_hash:'test',google_sub:'test',verified:true,enrollment_encrypted:null};});
@@ -84,7 +91,7 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
   app.addContentTypeParser('image/jpeg',{parseAs:'buffer'},(_req,b,done)=>done(null,b));
   let published=0,thumbnails=0,rejectThumbnail=true;app.post('/youtube/upload',async req=>{published++;assert.equal((req.query as {children:string}).children,'no');return {videoId:'abcdefghijk'};});
   app.post('/youtube/thumbnail',async(_req,reply)=>{thumbnails++;return rejectThumbnail?reply.code(409).send({error:'YouTube ще не підтвердив обкладинку.'}):{ok:true};});
-  await app.register(factoryRoutes,{storage,probe:async()=>120,imageGenerator:async()=>{generated++;return {data:Buffer.from('<svg width="1280" height="720" xmlns="http://www.w3.org/2000/svg"><rect width="1280" height="720" fill="#31513a"/></svg>'),type:'image/png'};},render:async(images:string|string[],_audio:string,out:string,_kind:string,_signal?:AbortSignal,format?:'video'|'shorts',preset?:string,onProgress?:(p:{percent:number;seconds:number;duration:number})=>void)=>{renders++;renderFormats.push(format||'video');renderSceneCounts.push(Array.isArray(images)?images.length:1);if(preset)renderPresets.push(preset);onProgress?.({percent:50,seconds:60,duration:120});if(renderFail)throw Error('test render interruption');await writeFile(out,Buffer.from('0000ftypisom-fake-render-test'));}});
+  await app.register(factoryRoutes,{storage,probe:async()=>120,imageGenerator:async(_prompt:string,_seed:number,_signal?:AbortSignal,imageOptions?:{format?:'landscape'|'portrait'})=>{generated++;imageFormats.push(imageOptions?.format||'landscape');return {data:Buffer.from('<svg width="1280" height="720" xmlns="http://www.w3.org/2000/svg"><rect width="1280" height="720" fill="#31513a"/></svg>'),type:'image/png'};},render:async(images:string|string[],_audio:string,out:string,_kind:string,_signal?:AbortSignal,format?:'video'|'shorts',preset?:string,onProgress?:(p:{percent:number;seconds:number;duration:number})=>void)=>{renders++;renderFormats.push(format||'video');renderSceneCounts.push(Array.isArray(images)?images.length:1);if(preset)renderPresets.push(preset);onProgress?.({percent:50,seconds:60,duration:120});if(renderFail)throw Error('test render interruption');await writeFile(out,Buffer.from('0000ftypisom-fake-render-test'));}});
   const headers={origin:'https://api.example.test'};
   const post=(url:string,payload:Record<string,unknown>)=>app.inject({method:'POST',url,headers,payload});
   const upload=(kind:string,body:Buffer,name:string)=>app.inject({method:'POST',url:'/api/factory/assets?kind='+kind+'&vocal=instrumental',headers:{...headers,'content-type':'multipart/form-data; boundary=testboundary'},payload:Buffer.concat([Buffer.from('--testboundary\r\nContent-Disposition: form-data; name="file"; filename="'+name+'"\r\nContent-Type: application/octet-stream\r\n\r\n'),body,Buffer.from('\r\n--testboundary--\r\n')])});
@@ -132,7 +139,11 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
     rejectThumbnail=false;const thumbnailRetry=await post('/api/factory/releases/'+id+'/thumbnail',{});assert.equal(thumbnailRetry.statusCode,200,thumbnailRetry.body);assert.equal(thumbnailRetry.json().thumbnailSet,true);assert.equal(thumbnails,2);assert.equal(((await q('SELECT error FROM factory_releases WHERE id=$1',[id])).rows[0] as {error:string|null}).error,null);
     const shortsStart=await post('/api/factory/releases/'+id+'/shorts',{});assert.equal(shortsStart.statusCode,202,shortsStart.body);
     for(let i=0;i<100;i++){const row=(await q('SELECT short_state,short_output_id FROM factory_releases WHERE id=$1',[id])).rows[0] as {short_state:string;short_output_id:string};if(row.short_state==='review'){assert.equal((await app.inject('/api/factory/assets/'+row.short_output_id+'/file')).statusCode,200);const poster=await app.inject('/api/factory/releases/'+id+'/shorts-poster');assert.equal(poster.statusCode,200);assert.equal((await sharp(poster.rawPayload).metadata()).height,1280);break;}if(i===99)assert.fail('Expected Shorts review state');await new Promise(resolve=>setTimeout(resolve,10));}
-    assert.equal(renderFormats.at(-1),'shorts');assert.equal(renderSceneCounts.at(-1),1);
+    assert.equal(renderFormats.at(-1),'shorts');assert.equal(renderSceneCounts.at(-1),1);assert.equal(imageFormats.at(-1),'portrait');
+    const shortRow=(await q('SELECT short_cover_id FROM factory_releases WHERE id=$1',[id])).rows[0] as {short_cover_id:string|null};assert.ok(shortRow.short_cover_id);
+    const generatedBefore=generated,regenerate=await post('/api/factory/releases/'+id+'/shorts',{regenerate:true});assert.equal(regenerate.statusCode,202,regenerate.body);
+    for(let i=0;i<100;i++){const row=(await q('SELECT short_state FROM factory_releases WHERE id=$1',[id])).rows[0] as {short_state:string};if(row.short_state==='review')break;if(i===99)assert.fail('Expected regenerated Shorts review state');await new Promise(resolve=>setTimeout(resolve,10));}
+    assert.equal(generated,generatedBefore+1);assert.equal(imageFormats.at(-1),'portrait');
     assert.equal((await post('/api/factory/releases/'+id+'/publish-short',{children:'no',synthetic:'yes',rights:false})).statusCode,400);assert.equal(published,1);
     const shortPublish=await post('/api/factory/releases/'+id+'/publish-short',{children:'no',synthetic:'yes',rights:true});assert.equal(shortPublish.statusCode,200,shortPublish.body);assert.equal(published,2);assert.equal(shortPublish.json().videoId,'abcdefghijk');
     const shortPublished=(await q('SELECT short_publish_state,short_video_id FROM factory_releases WHERE id=$1',[id])).rows[0] as {short_publish_state:string;short_video_id:string};assert.equal(shortPublished.short_publish_state,'private');assert.equal(shortPublished.short_video_id,'abcdefghijk');
@@ -140,8 +151,8 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
     const reconcileIdeaId=randomUUID(),reconcileSong={title:release.title,concept:'A keeper returns to the northern castle and completes an old promise before winter.',lyrics:'[Verse 1]\n'+('The northern road remembers every name\n'.repeat(12))+'[Chorus]\n'+('We carry home the flame again\n'.repeat(8)),sunoPrompt:'Epic Viking anthem with a low male lead, controlled choir, frame drums and bowed strings.',artworkPrompt:'Two original adult Vikings beside a northern castle, cinematic realism, no text or logos.'};
     await q("INSERT INTO factory_song_ideas(id,channel_id,mode,brief,state,content,approved_at) VALUES($1,'veil-of-ages','viking-anthem','Reconcile test','approved',$2,NOW())",[reconcileIdeaId,JSON.stringify(reconcileSong)]);
     const reconciled=await uploadIdea(mp3,'Castle.mp3',reconcileIdeaId);assert.equal(reconciled.statusCode,200,reconciled.body);assert.equal(reconciled.json().alreadyReleased,true);assert.equal(reconciled.json().releaseId,id);assert.equal(((await q('SELECT audio_id FROM factory_song_ideas WHERE id=$1',[reconcileIdeaId])).rows[0] as {audio_id:string}).audio_id,audio.json().id);assert.equal(((await q('SELECT recipe FROM factory_releases WHERE id=$1',[id])).rows[0] as {recipe:{ideaId:string}}).recipe.ideaId,reconcileIdeaId);
-    const removed=await post('/api/factory/releases/'+id+'/delete',{confirmation:'DELETE'});assert.equal(removed.statusCode,200,removed.body);assert.equal((await q('SELECT * FROM factory_releases WHERE id=$1',[id])).rows.length,0);assert.equal((await q("SELECT * FROM factory_assets WHERE kind='audio' AND id=$1",[audio.json().id])).rows.length,1);assert.equal(deletes,3);
-    assert.equal((await post('/api/factory/assets/'+audio.json().id+'/delete',{confirmation:'DELETE'})).statusCode,200);assert.equal(deletes,4);
+    const removed=await post('/api/factory/releases/'+id+'/delete',{confirmation:'DELETE'});assert.equal(removed.statusCode,200,removed.body);assert.equal((await q('SELECT * FROM factory_releases WHERE id=$1',[id])).rows.length,0);assert.equal((await q("SELECT * FROM factory_assets WHERE kind='audio' AND id=$1",[audio.json().id])).rows.length,1);assert.equal(deletes,4);
+    assert.equal((await post('/api/factory/assets/'+audio.json().id+'/delete',{confirmation:'DELETE'})).statusCode,200);assert.equal(deletes,5);
     const ideaId=randomUUID(),song={title:'Oath Beneath the Mountain',concept:'Two siblings return from exile and answer the call of their mountain home.',lyrics:'[Verse 1]\n'+('We carry the winter road beneath our feet\n'.repeat(12))+'[Chorus]\n'+('The mountain calls us home again\n'.repeat(8)),sunoPrompt:'Nordic cinematic hip-hop, low male rap verses, melodic female chorus, frame drums and bowed strings.',artworkPrompt:'Two original adult Vikings overlooking a stormy Nordic fjord, forest green and muted gold, cinematic realism, no text.'};
     await q("INSERT INTO factory_song_ideas(id,channel_id,mode,brief,state,content,approved_at) VALUES($1,'veil-of-ages','viking-rap-duet','Linked test','approved',$2,NOW())",[ideaId,JSON.stringify(song)]);
     const ideaUpload=await uploadIdea(Buffer.from('ID3-linked-approved-song-audio'),'download.mp3',ideaId,'Old browser description '.repeat(30));assert.equal(ideaUpload.statusCode,201,ideaUpload.body);
