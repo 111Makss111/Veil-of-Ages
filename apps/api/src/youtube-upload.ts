@@ -25,6 +25,44 @@ export function isMp4(file: Buffer): boolean {
   return file.length >= 12 && file.toString('ascii', 4, 8) === 'ftyp';
 }
 
+function uploadLocation(value:string|null):URL {
+  const location=new URL(value??'https://invalid.invalid');
+  if(location.protocol!=='https:'||location.hostname!=='www.googleapis.com'||location.port||location.username||location.password||location.pathname!=='/upload/youtube/v3/videos')throw new Error('Invalid upload destination');
+  return location;
+}
+
+async function confirmedVideo(response:Response):Promise<string>{
+  const video=z.object({id:z.string().regex(/^[A-Za-z0-9_-]{11}$/),status:z.object({privacyStatus:z.literal('private')})}).parse(await response.json());
+  return video.id;
+}
+
+function nextUploadByte(response:Response,total:number):number{
+  const match=/bytes=0-(\d+)/.exec(response.headers.get('range')??'');
+  return match?Math.min(total,Number(match[1])+1):0;
+}
+
+async function queryUpload(location:URL,total:number,authorization:string):Promise<Response>{
+  return fetch(location,{method:'PUT',redirect:'error',signal:AbortSignal.timeout(30000),headers:{Authorization:authorization,'Content-Length':'0','Content-Range':`bytes */${total}`}});
+}
+
+async function finishPrivateVideo(file:Buffer,location:URL,authorization:string):Promise<string>{
+  let offset=0,lastError:unknown;
+  for(let attempt=0;attempt<4;attempt++){
+    let response:Response;
+    try{
+      if(offset>=file.length)response=await queryUpload(location,file.length,authorization);
+      else{const body=file.subarray(offset);response=await fetch(location,{method:'PUT',redirect:'error',signal:AbortSignal.timeout(180000),headers:{Authorization:authorization,'Content-Type':'video/mp4','Content-Length':String(body.length),'Content-Range':`bytes ${offset}-${file.length-1}/${file.length}`},body:new Uint8Array(body)});}
+    }catch(error){
+      lastError=error;
+      try{response=await queryUpload(location,file.length,authorization);}catch(statusError){lastError=statusError;continue;}
+    }
+    if(response.ok)return confirmedVideo(response);
+    if(response.status===308){offset=nextUploadByte(response,file.length);continue;}
+    throw new Error('Upload outcome not confirmed');
+  }
+  throw lastError instanceof Error?lastError:new Error('Upload outcome not confirmed');
+}
+
 export async function sendPrivateVideo(file: Buffer, metadata: Metadata, accessToken: string): Promise<string> {
   const authorization = `Bearer ${accessToken}`;
   const session = await fetch('https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status&notifySubscribers=false', {
@@ -33,16 +71,7 @@ export async function sendPrivateVideo(file: Buffer, metadata: Metadata, accessT
     body: JSON.stringify({ snippet: { title: metadata.title, categoryId: '10', description: metadata.description || 'Original music release from Veil of Ages.', tags: metadata.tags ?? [] }, status: { privacyStatus: 'private', selfDeclaredMadeForKids: metadata.children === 'yes', containsSyntheticMedia: metadata.synthetic === 'yes' } })
   });
   if (!session.ok) throw new Error('YouTube refused upload session');
-  const location = new URL(session.headers.get('location') ?? 'https://invalid.invalid');
-  if (location.protocol !== 'https:' || location.hostname !== 'www.googleapis.com' || location.port || location.username || location.password || location.pathname !== '/upload/youtube/v3/videos') throw new Error('Invalid upload destination');
-  const result = await fetch(location, {
-    method: 'PUT', redirect: 'error', signal: AbortSignal.timeout(120000),
-    headers: { Authorization: authorization, 'Content-Type': 'video/mp4', 'Content-Length': String(file.length) },
-    body: new Uint8Array(file)
-  });
-  if (!result.ok) throw new Error('Upload outcome not confirmed');
-  const video = z.object({ id: z.string().regex(/^[A-Za-z0-9_-]{11}$/), status: z.object({ privacyStatus: z.literal('private') }) }).parse(await result.json());
-  return video.id;
+  return finishPrivateVideo(file,uploadLocation(session.headers.get('location')),authorization);
 }
 
 type ThumbnailFailure='forbidden'|'invalid'|'not-found'|'rate-limit'|'temporary';
@@ -137,7 +166,7 @@ export async function youtubeUploadRoutes(app: FastifyInstance) {
       if (!inserted.rows.length) {
         const previous = await db.query('SELECT state,video_id FROM youtube_uploads WHERE file_hash=$1', [fileHash]);
         if (previous.rows[0]?.state === 'complete') return { videoId: previous.rows[0].video_id, duplicate: true };
-        return reply.code(409).send({ error: 'Цей файл уже передається або результат попередньої спроби невідомий. Перевірте YouTube Studio; автоматичний повтор заблокований, щоб не створити копію.' });
+        return reply.code(409).send({ error: 'Цей файл уже передається або результат попередньої спроби невідомий. Перевірте YouTube Studio; автоматичний повтор заблокований, щоб не створити копію.', uncertain: true });
       }
       claimed = true;
       const videoId = await sendPrivateVideo(request.body, metadata.data, token.access_token);
@@ -145,7 +174,7 @@ export async function youtubeUploadRoutes(app: FastifyInstance) {
       return { videoId, duplicate: false };
     } catch {
       if (claimed) await requirePool().query("UPDATE youtube_uploads SET state='uncertain' WHERE file_hash=$1 AND state='uploading'", [fileHash]).catch(() => {});
-      return reply.code(502).send({ error: claimed ? 'Не вдалося підтвердити завантаження. Перевірте YouTube Studio перед наступними діями; дублікат автоматично не створюватиметься.' : 'Не вдалося отримати доступ до Google або бази. Оновіть статус YouTube; за потреби підключіть Google заново.' });
+      return reply.code(502).send({ error: claimed ? 'Не вдалося підтвердити завантаження. Перевірте YouTube Studio перед наступними діями; дублікат автоматично не створюватиметься.' : 'Не вдалося отримати доступ до Google або бази. Оновіть статус YouTube; за потреби підключіть Google заново.', uncertain: claimed });
     }
   });
 }

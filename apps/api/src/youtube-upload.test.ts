@@ -35,6 +35,19 @@ test('upload always requests private visibility and returns confirmed video ID',
   } finally { globalThis.fetch = original; }
 });
 
+test('resumable upload continues from the byte confirmed by YouTube',async()=>{
+  const original=globalThis.fetch;let calls=0;
+  globalThis.fetch=async(_url,init)=>{
+    calls++;
+    if(calls===1)return new Response(null,{headers:{location:'https://www.googleapis.com/upload/youtube/v3/videos?upload_id=resume'}});
+    if(calls===2){assert.equal((init?.headers as Record<string,string>)['Content-Range'],`bytes 0-${file.length-1}/${file.length}`);return new Response(null,{status:308,headers:{range:'bytes=0-7'}});}
+    assert.equal((init?.headers as Record<string,string>)['Content-Range'],`bytes 8-${file.length-1}/${file.length}`);
+    assert.deepEqual(Buffer.from(init?.body as Uint8Array),file.subarray(8));
+    return new Response(JSON.stringify({id:'abcdefghijk',status:{privacyStatus:'private'}}),{status:201});
+  };
+  try{assert.equal(await sendPrivateVideo(file,{title:'Resume',children:'no',synthetic:'yes'},'secret-token'),'abcdefghijk');assert.equal(calls,3);}finally{globalThis.fetch=original;}
+});
+
 test('generated artwork can be set as the private video thumbnail',async()=>{
   const original=globalThis.fetch,png=Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),Buffer.alloc(40)]);let called=false;
   globalThis.fetch=async(url,init)=>{called=true;assert.equal(String(url),'https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId=abcdefghijk');assert.equal(init?.method,'POST');assert.equal((init?.headers as Record<string,string>)['Content-Type'],'image/png');assert.deepEqual(Buffer.from(init?.body as Uint8Array),png);return new Response(JSON.stringify({items:[{}]}),{status:200});};

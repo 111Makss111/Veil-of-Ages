@@ -45,6 +45,8 @@ test('factory browser script parses and storage fails closed without configurati
   assert.match(factoryScript,/function notes/);
   assert.match(factoryScript,/notesPending/);
   assert.match(factoryScript,/noteForm'\)\.requestSubmit/);
+  assert.match(factoryScript,/function uploadRecovery/);
+  assert.match(factoryScript,/NOT_ON_YOUTUBE/);
   assert.match(factoryScript,/details\.open=needsAttention/);
   assert.match(factoryScript,/Розгорнути/);
   const before=process.env.R2_ACCOUNT_ID;delete process.env.R2_ACCOUNT_ID;
@@ -104,7 +106,7 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
   const uploadIdea=(body:Buffer,name:string,ideaId:string,theme='')=>app.inject({method:'POST',url:'/api/factory/assets?kind=audio&ideaId='+ideaId+'&theme='+encodeURIComponent(theme),headers:{...headers,'content-type':'multipart/form-data; boundary=testboundary'},payload:Buffer.concat([Buffer.from('--testboundary\r\nContent-Disposition: form-data; name="file"; filename="'+name+'"\r\nContent-Type: application/octet-stream\r\n\r\n'),body,Buffer.from('\r\n--testboundary--\r\n')])});
   const waitState=async(id:string,state:string)=>{for(let i=0;i<100;i++){const r=(await q('SELECT * FROM factory_releases WHERE id=$1',[id])).rows[0] as {state:string};if(r.state===state)return;await new Promise(r=>setTimeout(r,10));}assert.fail('Expected '+state);};
   try{
-    await db.exec(factoryMigration);await db.exec(factorySongMigration);
+    await db.exec(factoryMigration);await db.exec(factorySongMigration);await db.exec("CREATE TABLE youtube_uploads(file_hash TEXT PRIMARY KEY,state TEXT NOT NULL CHECK(state IN ('uploading','complete','uncertain')),video_id TEXT)");
     authorized=false;assert.equal((await app.inject('/api/factory')).statusCode,401);authorized=true;
     const factoryHtml=await app.inject('/factory');assert.match(factoryHtml.body,/\/factory\/icon\.svg/);assert.match(factoryHtml.body,/Тіллі Сміт: урок, що врятував пляж/);assert.match(factoryHtml.body,/Wan 2\.2 \+ ComfyUI/);assert.match(factoryHtml.body,/id="clipForm"/);assert.match(factoryHtml.body,/id="noteForm"/);const favicon=await app.inject('/factory/icon.svg');assert.equal(favicon.statusCode,200);assert.match(favicon.headers['content-type']||'',/image\/svg\+xml/);assert.match(favicon.body,/bde998/);
     assert.equal((await app.inject({method:'POST',url:'/api/factory/recipe',headers:{origin:'https://evil.test'},payload:{}})).statusCode,403);
@@ -150,6 +152,11 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
     assert.equal((await post('/api/factory/releases/'+id+'/publish',{children:'no',synthetic:'yes',rights:false})).statusCode,400);assert.equal(published,0);
     const publish=await post('/api/factory/releases/'+id+'/publish',{children:'no',synthetic:'yes',rights:true});assert.equal(publish.statusCode,200,publish.body);assert.equal(published,1);assert.equal(publish.json().thumbnailSet,false);assert.equal(thumbnails,1,publish.body);
     rejectThumbnail=false;const thumbnailRetry=await post('/api/factory/releases/'+id+'/thumbnail',{});assert.equal(thumbnailRetry.statusCode,200,thumbnailRetry.body);assert.equal(thumbnailRetry.json().thumbnailSet,true);assert.equal(thumbnails,2);assert.equal(((await q('SELECT error FROM factory_releases WHERE id=$1',[id])).rows[0] as {error:string|null}).error,null);
+    const outputHash=((await q('SELECT hash FROM factory_assets WHERE id=$1',[release.output_id])).rows[0] as {hash:string}).hash;
+    await q("INSERT INTO youtube_uploads(file_hash,state,video_id) VALUES($1,'complete','abcdefghijk')",[outputHash]);await q("UPDATE factory_releases SET state='uncertain',video_id=NULL,error='lost response' WHERE id=$1",[id]);
+    const restored=await post('/api/factory/releases/'+id+'/resolve-upload',{target:'video',action:'reconcile'});assert.equal(restored.statusCode,200,restored.body);assert.equal(restored.json().videoId,'abcdefghijk');assert.equal(((await q('SELECT state FROM factory_releases WHERE id=$1',[id])).rows[0] as {state:string}).state,'private');
+    await q("UPDATE youtube_uploads SET state='uncertain',video_id=NULL WHERE file_hash=$1",[outputHash]);await q("UPDATE factory_releases SET state='uncertain',video_id=NULL,error='lost response' WHERE id=$1",[id]);
+    const resetUpload=await post('/api/factory/releases/'+id+'/resolve-upload',{target:'video',action:'reset',confirmation:'NOT_ON_YOUTUBE'});assert.equal(resetUpload.statusCode,200,resetUpload.body);assert.equal(((await q('SELECT state FROM factory_releases WHERE id=$1',[id])).rows[0] as {state:string}).state,'review');await q("UPDATE factory_releases SET state='private',video_id='abcdefghijk' WHERE id=$1",[id]);
     const shortsStart=await post('/api/factory/releases/'+id+'/shorts',{});assert.equal(shortsStart.statusCode,202,shortsStart.body);
     for(let i=0;i<100;i++){const row=(await q('SELECT short_state,short_output_id FROM factory_releases WHERE id=$1',[id])).rows[0] as {short_state:string;short_output_id:string};if(row.short_state==='review'){assert.equal((await app.inject('/api/factory/assets/'+row.short_output_id+'/file')).statusCode,200);const poster=await app.inject('/api/factory/releases/'+id+'/shorts-poster');assert.equal(poster.statusCode,200);assert.equal((await sharp(poster.rawPayload).metadata()).height,1280);break;}if(i===99)assert.fail('Expected Shorts review state');await new Promise(resolve=>setTimeout(resolve,10));}
     assert.equal(renderFormats.at(-1),'shorts');assert.equal(renderSceneCounts.at(-1),1);assert.equal(imageFormats.at(-1),'portrait');

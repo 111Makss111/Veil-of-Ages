@@ -406,21 +406,54 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
       if(!r)throw new FactoryError(409,'Повтор доступний лише для невдалого складання.');return r;
     });work(release);return reply.code(202).send({id});
   });
+  app.post('/api/factory/releases/:id/resolve-upload',async req=>{
+    const id=uuid.parse((req.params as {id:string}).id),body=z.discriminatedUnion('action',[
+      z.object({target:z.enum(['video','shorts']),action:z.literal('reconcile')}).strict(),
+      z.object({target:z.enum(['video','shorts']),action:z.literal('attach'),videoId:z.string().regex(/^[A-Za-z0-9_-]{11}$/)}).strict(),
+      z.object({target:z.enum(['video','shorts']),action:z.literal('reset'),confirmation:z.literal('NOT_ON_YOUTUBE')}).strict()
+    ]).parse(req.body);
+    return factoryLock(async db=>{
+      const assetJoin=body.target==='video'?'a.id=r.output_id':'a.id=r.short_output_id';
+      const release=(await db.query(`SELECT r.*,a.hash AS upload_hash FROM factory_releases r JOIN factory_assets a ON ${assetJoin} WHERE r.id=$1 FOR UPDATE`,[id])).rows[0];
+      if(!release)throw new FactoryError(404,'Випуск або його відеофайл не знайдено.');
+      const uncertain=body.target==='video'?release.state==='uncertain':release.short_publish_state==='uncertain';
+      if(!uncertain)throw new FactoryError(409,'Ця передача вже не потребує відновлення. Онови сторінку.');
+      if(body.action==='attach'){
+        await db.query("INSERT INTO youtube_uploads(file_hash,state,video_id) VALUES($1,'complete',$2) ON CONFLICT(file_hash) DO UPDATE SET state='complete',video_id=EXCLUDED.video_id",[release.upload_hash,body.videoId]);
+        if(body.target==='video')await db.query("UPDATE factory_releases SET state='private',video_id=$2,error='Ролик прив’язано з YouTube Studio. Повтори встановлення обкладинки.',updated_at=NOW() WHERE id=$1",[id,body.videoId]);
+        else await db.query("UPDATE factory_releases SET short_publish_state='private',short_video_id=$2,short_publish_error=NULL,updated_at=NOW() WHERE id=$1",[id,body.videoId]);
+        return {reconciled:true,videoId:body.videoId,attached:true};
+      }
+      const upload=(await db.query('SELECT state,video_id FROM youtube_uploads WHERE file_hash=$1',[release.upload_hash])).rows[0];
+      if(upload?.state==='complete'&&/^[A-Za-z0-9_-]{11}$/.test(upload.video_id||'')){
+        if(body.target==='video')await db.query("UPDATE factory_releases SET state='private',video_id=$2,error='Відео знайдено серед завершених передач. За потреби повтори встановлення обкладинки.',updated_at=NOW() WHERE id=$1",[id,upload.video_id]);
+        else await db.query("UPDATE factory_releases SET short_publish_state='private',short_video_id=$2,short_publish_error=NULL,updated_at=NOW() WHERE id=$1",[id,upload.video_id]);
+        return {reconciled:true,videoId:upload.video_id};
+      }
+      if(body.action==='reconcile')throw new FactoryError(409,'Завершену передачу не знайдено. Перевір YouTube Studio. Якщо ролика там немає, дозволь нову спробу окремою кнопкою.');
+      await db.query("DELETE FROM youtube_uploads WHERE file_hash=$1 AND state<>'complete'",[release.upload_hash]);
+      if(body.target==='video')await db.query("UPDATE factory_releases SET state='review',video_id=NULL,error=NULL,updated_at=NOW() WHERE id=$1",[id]);
+      else await db.query("UPDATE factory_releases SET short_publish_state=NULL,short_video_id=NULL,short_publish_error=NULL,updated_at=NOW() WHERE id=$1",[id]);
+      return {reconciled:false,retryAllowed:true};
+    });
+  });
   app.post('/api/factory/releases/:id/publish',{logLevel:'silent'},async(req,reply)=>{
     const id=uuid.parse((req.params as {id:string}).id);
     const meta=z.object({children:z.enum(['yes','no']),synthetic:z.enum(['yes','no']),rights:z.literal(true)}).strict().parse(req.body);
     const release=(await requirePool().query("UPDATE factory_releases SET state='publishing',updated_at=NOW() WHERE id=$1 AND state='review' RETURNING *",[id])).rows[0];
     if(!release)throw new FactoryError(409,'Випуск не готовий або вже передавався. Не повторюй невідоме завантаження без перевірки YouTube.');
+    let mayHaveUploaded=false;
     try{
       const a=(await requirePool().query('SELECT * FROM factory_assets WHERE id=$1',[release.output_id])).rows[0];
       const file=await needStorage().get(a.object_key,MAX_OUTPUT_BYTES);
       const result=await app.inject({method:'POST',url:'/youtube/upload?'+new URLSearchParams({title:release.title,children:meta.children,synthetic:meta.synthetic,description:String(release.recipe?.youtubeDescription||'Original music release from Veil of Ages.'),tags:Array.isArray(release.recipe?.youtubeTags)?release.recipe.youtubeTags.join(','):''}),headers:{cookie:req.headers.cookie??'',origin:ownerOrigin(),'content-type':'video/mp4'},payload:file});
-      const data=result.json();if(result.statusCode!==200||!data.videoId)throw Error('Upload not confirmed');
+      const data=result.json();if(result.statusCode!==200||!data.videoId){mayHaveUploaded=data.uncertain===true;throw new FactoryError(result.statusCode===409?409:502,data.error||'YouTube не прийняв відео.');}mayHaveUploaded=true;
       let thumbnailWarning:string|null=null;
       try{await attachYoutubeThumbnail(release,data.videoId,req.headers.cookie??'');}
       catch(error){thumbnailWarning=error instanceof FactoryError?error.message:'Відео завантажено приватно, але YouTube не підтвердив власну обкладинку.';}
       await requirePool().query("UPDATE factory_releases SET state='private',video_id=$2,error=$3,updated_at=NOW() WHERE id=$1",[id,data.videoId,thumbnailWarning]);return {videoId:data.videoId,thumbnailSet:!thumbnailWarning,warning:thumbnailWarning};
-    }catch{
+    }catch(error){
+      if(!mayHaveUploaded){const message=error instanceof FactoryError?error.message:'Передача не почалася. Перевір підключення YouTube і повтори спробу.';await requirePool().query("UPDATE factory_releases SET state='review',error=$2,updated_at=NOW() WHERE id=$1",[id,message]);throw error instanceof FactoryError?error:new FactoryError(502,message);}
       await requirePool().query("UPDATE factory_releases SET state='uncertain',error='Передачу не підтверджено. Перевір YouTube Studio; автоматичний повтор заблоковано.',updated_at=NOW() WHERE id=$1",[id]);
       return reply.code(502).send({error:'Перевір YouTube Studio перед повторними діями. Результат передачі невідомий.'});
     }
@@ -430,6 +463,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     const meta=z.object({children:z.enum(['yes','no']),synthetic:z.enum(['yes','no']),rights:z.literal(true)}).strict().parse(req.body);
     const release=(await requirePool().query("UPDATE factory_releases SET short_publish_state='publishing',short_publish_error=NULL,updated_at=NOW() WHERE id=$1 AND state IN ('review','private') AND short_state='review' AND short_output_id IS NOT NULL AND short_publish_state IS NULL RETURNING *",[id])).rows[0];
     if(!release)throw new FactoryError(409,'Shorts не готовий або вже передавався. Не повторюй невідоме завантаження без перевірки YouTube.');
+    let mayHaveUploaded=false;
     try{
       const asset=(await requirePool().query("SELECT * FROM factory_assets WHERE id=$1 AND kind='video' AND state='ready'",[release.short_output_id])).rows[0];
       if(!asset)throw Error('Shorts asset not ready');
@@ -438,10 +472,11 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
       const description=String(release.recipe?.youtubeDescription||'Original Viking song from Veil of Ages.')+'\n\nListen to the full song on Veil of Ages. #Shorts';
       const title=(release.title+' | Viking Song #Shorts').slice(0,100);
       const result=await app.inject({method:'POST',url:'/youtube/upload?'+new URLSearchParams({title,children:meta.children,synthetic:meta.synthetic,description,tags}),headers:{cookie:req.headers.cookie??'',origin:ownerOrigin(),'content-type':'video/mp4'},payload:file});
-      const data=result.json();if(result.statusCode!==200||!data.videoId)throw Error('Shorts upload not confirmed');
+      const data=result.json();if(result.statusCode!==200||!data.videoId){mayHaveUploaded=data.uncertain===true;throw new FactoryError(result.statusCode===409?409:502,data.error||'YouTube не прийняв Shorts.');}mayHaveUploaded=true;
       await requirePool().query("UPDATE factory_releases SET short_publish_state='private',short_video_id=$2,short_publish_error=NULL,updated_at=NOW() WHERE id=$1",[id,data.videoId]);
       return {videoId:data.videoId};
-    }catch{
+    }catch(error){
+      if(!mayHaveUploaded){const message=error instanceof FactoryError?error.message:'Передача Shorts не почалася. Перевір підключення YouTube і повтори спробу.';await requirePool().query("UPDATE factory_releases SET short_publish_state=NULL,short_publish_error=$2,updated_at=NOW() WHERE id=$1",[id,message]);throw error instanceof FactoryError?error:new FactoryError(502,message);}
       await requirePool().query("UPDATE factory_releases SET short_publish_state='uncertain',short_publish_error='Передачу Shorts не підтверджено. Перевір YouTube Studio; автоматичний повтор заблоковано.',updated_at=NOW() WHERE id=$1",[id]);
       return reply.code(502).send({error:'Перевір YouTube Studio: результат передачі Shorts невідомий.'});
     }
