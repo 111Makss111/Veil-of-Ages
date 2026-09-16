@@ -51,7 +51,7 @@ video{display:block;width:min(100%,960px);height:auto;aspect-ratio:16/9;object-f
 export const factoryScript=String.raw`
 const $=id=>document.getElementById(id);let data=null,timer=null,busy=false,recipeDirty=false,releaseSignature='',libraryKind='audio',servicesLoaded=false;let key;
 try{key=localStorage.getItem('factory-request')||crypto.randomUUID();}catch{key=crypto.randomUUID();}
-const labels={reserved:'Передається',ready:'У бібліотеці',uncertain:'Потрібна перевірка',rendering:'Складаємо відео',review:'Готово до перевірки',failed:'Потрібен повтор складання',publishing:'Передача на YouTube',private:'Завантажено приватно'};
+const labels={reserved:'Передається',ready:'У бібліотеці',uncertain:'Потрібна перевірка',rendering:'Складаємо відео',review:'Готово до перевірки',failed:'Потрібен повтор складання',publishing:'Передача на YouTube',private:'Передано YouTube · перевір'};
 const stageLabels={queued:'У черзі',preparing:'Готуємо виробничу лінію',downloading:'Отримуємо матеріали','generating-image':'Створюємо образи','saving-cover':'Зберігаємо образи',rendering:'Монтуємо відео та звук',verifying:'Перевіряємо результат',uploading:'Зберігаємо готове відео',complete:'Готово до перевірки',interrupted:'Процес перервано'};
 const bytes=n=>n>=1e9?(n/1e9).toFixed(2)+' ГБ':(n/1e6).toFixed(1)+' МБ';
 const duration=n=>{n=Math.max(0,Math.round(n));return n<60?n+' с':Math.floor(n/60)+' хв'+(n%60?' '+n%60+' с':'');};
@@ -77,7 +77,7 @@ function shortsPanel(r){
   }
   if(r.short_state==='review'){
     const video=node('video');video.controls=true;video.preload='none';video.poster='/api/factory/releases/'+r.id+'/shorts-poster';video.src='/api/factory/assets/'+r.short_output_id+'/file';video.className='shorts-preview';
-    box.append(node('p',r.short_publish_state==='private'?'Shorts уже завантажено на YouTube приватно.':'Готово до твоєї перевірки. Це окремий вертикальний образ 9:16.','hint'),video);
+    box.append(node('p',r.short_publish_state==='private'?'YouTube прийняв передачу Shorts. Натисни перевірку нижче, щоб підтвердити канал та обробку.':'Готово до твоєї перевірки. Це окремий вертикальний образ 9:16.','hint'),video);
     if(!r.short_publish_state){
       const remake=node('button','Створити інший вертикальний образ','secondary');remake.type='button';
       remake.onclick=async()=>{remake.disabled=true;try{await api('/api/factory/releases/'+r.id+'/shorts',{regenerate:true});releaseSignature='';await load();msg('Створюємо новий вертикальний образ і перезбираємо Shorts.');}catch(e){msg(e.message);remake.disabled=false;}};
@@ -91,7 +91,7 @@ function shortsPanel(r){
       const choice=(text,id)=>{const label=node('label',text),select=node('select');select.required=true;select.name=id;select.append(new Option('Обери відповідь',''),new Option('Так','yes'),new Option('Ні','no'));label.append(select);form.append(label);return select;};
       const children=choice('Створено спеціально для дітей?','short-children'),synthetic=choice('Містить згенерований ШІ контент?','short-synthetic'),rights=node('input'),rightsLabel=node('label');rights.type='checkbox';rights.required=true;rightsLabel.append(rights,document.createTextNode('Маю право завантажити цю музику й картинки.'));
       const publish=node('button','Завантажити Shorts приватно на YouTube');form.append(rightsLabel,publish);
-      form.onsubmit=async event=>{event.preventDefault();publish.disabled=true;try{await api('/api/factory/releases/'+r.id+'/publish-short',{children:children.value,synthetic:synthetic.value,rights:rights.checked});releaseSignature='';await load();msg('Shorts завантажено на YouTube приватно. Повне відео залишилося без змін.');}catch(e){msg(e.message);await load().catch(()=>{});}};
+      form.onsubmit=async event=>{event.preventDefault();publish.disabled=true;try{await api('/api/factory/releases/'+r.id+'/publish-short',{children:children.value,synthetic:synthetic.value,rights:rights.checked});releaseSignature='';await load();msg('YouTube прийняв передачу Shorts. Натисни «Перевірити Shorts у YouTube», щоб підтвердити результат.');}catch(e){msg(e.message);await load().catch(()=>{});}};
       details.append(form);box.append(details);
     }
     return box;

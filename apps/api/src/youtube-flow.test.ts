@@ -32,6 +32,10 @@ test('OAuth rejects unauthorized starts, binds browser, consumes state once and 
     return { rows: [] };
   }) as typeof originalQuery;
   globalThis.fetch = async (url, init) => {
+    if(String(url).startsWith('https://www.googleapis.com/youtube/v3/channels')){
+      assert.equal((init?.headers as Record<string,string>).Authorization,'Bearer access-private');
+      return new Response(JSON.stringify({items:[{id:'UCveilofages',snippet:{title:'Veil of Ages'}}]}));
+    }
     assert.equal(String(url), 'https://oauth2.googleapis.com/token');
     const body = init!.body as URLSearchParams;
     assert.equal(body.get('redirect_uri'), 'https://api.example.test/auth/youtube/callback');

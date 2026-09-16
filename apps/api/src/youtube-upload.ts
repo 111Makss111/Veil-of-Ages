@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { config } from './config.js';
 import { requirePool } from './db.js';
-import { getYoutubeRefreshToken, googleToken, setupSecretMatches } from './youtube.js';
+import { getYoutubeRefreshToken, googleToken, requireVeilOfAgesChannel, setupSecretMatches, YoutubeChannelMismatchError } from './youtube.js';
 
 export const MAX_VIDEO_BYTES = 48 * 1024 * 1024;
 export const MAX_THUMBNAIL_BYTES = 2 * 1024 * 1024;
@@ -155,8 +155,8 @@ export async function youtubeUploadRoutes(app: FastifyInstance) {
     if(!query.success||!Buffer.isBuffer(file)||(type!=='image/jpeg'&&type!=='image/png'))return reply.code(400).send({error:'Мініатюра має бути PNG або JPG до 2 МіБ.'});
     const valid=type==='image/png'?file.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])):file[0]===0xff&&file[1]===0xd8;
     if(!valid)return reply.code(400).send({error:'Формат мініатюри не підтверджено.'});
-    try{const refresh=await getYoutubeRefreshToken();if(!refresh)return reply.code(409).send({error:'Спочатку підключіть YouTube через Google.'});const token=await googleToken({client_id:process.env.YOUTUBE_CLIENT_ID??'',client_secret:process.env.YOUTUBE_CLIENT_SECRET??'',refresh_token:refresh,grant_type:'refresh_token'});await setVideoThumbnail(file,type,query.data.videoId,token.access_token);return {ok:true};}
-    catch(error){return reply.code(error instanceof YoutubeThumbnailError&&error.reason!=='temporary'?409:502).send({error:error instanceof YoutubeThumbnailError?error.message:'Відео завантажено, але YouTube не підтвердив власну обкладинку.'});}
+    try{const refresh=await getYoutubeRefreshToken();if(!refresh)return reply.code(409).send({error:'Спочатку підключіть YouTube через Google.'});const token=await googleToken({client_id:process.env.YOUTUBE_CLIENT_ID??'',client_secret:process.env.YOUTUBE_CLIENT_SECRET??'',refresh_token:refresh,grant_type:'refresh_token'});await requireVeilOfAgesChannel(token.access_token);await setVideoThumbnail(file,type,query.data.videoId,token.access_token);return {ok:true};}
+    catch(error){return reply.code(error instanceof YoutubeChannelMismatchError||error instanceof YoutubeThumbnailError&&error.reason!=='temporary'?409:502).send({error:error instanceof YoutubeChannelMismatchError||error instanceof YoutubeThumbnailError?error.message:'Відео завантажено, але YouTube не підтвердив власну обкладинку.'});}
   });
   app.post('/youtube/video-status',{logLevel:'silent',onRequest:async(request,reply)=>{
     if(!request.ownerSession?.verified)return reply.code(401).send({error:'Потрібно увійти у кабінет.'});
@@ -164,8 +164,8 @@ export async function youtubeUploadRoutes(app: FastifyInstance) {
   }},async(request,reply)=>{
     const query=z.object({videoId:z.string().regex(/^[A-Za-z0-9_-]{11}$/)}).safeParse(request.query);
     if(!query.success)return reply.code(400).send({error:'Некоректний ID ролика.'});
-    try{const refresh=await getYoutubeRefreshToken();if(!refresh)return reply.code(409).send({error:'Спочатку підключіть YouTube через Google.'});const token=await googleToken({client_id:process.env.YOUTUBE_CLIENT_ID??'',client_secret:process.env.YOUTUBE_CLIENT_SECRET??'',refresh_token:refresh,grant_type:'refresh_token'});return await getYoutubeVideoState(query.data.videoId,token.access_token);}
-    catch(error){return reply.code(502).send({error:error instanceof Error&&error.message.startsWith('Підключення Google')?error.message:'Не вдалося перевірити ролик через YouTube API. Онови підключення Google і спробуй ще раз.'});}
+    try{const refresh=await getYoutubeRefreshToken();if(!refresh)return reply.code(409).send({error:'Спочатку підключіть YouTube через Google.'});const token=await googleToken({client_id:process.env.YOUTUBE_CLIENT_ID??'',client_secret:process.env.YOUTUBE_CLIENT_SECRET??'',refresh_token:refresh,grant_type:'refresh_token'});await requireVeilOfAgesChannel(token.access_token);return await getYoutubeVideoState(query.data.videoId,token.access_token);}
+    catch(error){return reply.code(error instanceof YoutubeChannelMismatchError?409:502).send({error:error instanceof YoutubeChannelMismatchError||error instanceof Error&&error.message.startsWith('Підключення Google')?error.message:'Не вдалося перевірити ролик через YouTube API. Онови підключення Google і спробуй ще раз.'});}
   });
   app.post('/youtube/upload', {
     bodyLimit: MAX_VIDEO_BYTES, logLevel: 'silent',
@@ -189,6 +189,7 @@ export async function youtubeUploadRoutes(app: FastifyInstance) {
       const refresh = await getYoutubeRefreshToken();
       if (!refresh) return reply.code(409).send({ error: 'Спочатку підключіть YouTube через Google.' });
       const token = await googleToken({ client_id: process.env.YOUTUBE_CLIENT_ID ?? '', client_secret: process.env.YOUTUBE_CLIENT_SECRET ?? '', refresh_token: refresh, grant_type: 'refresh_token' });
+      try{await requireVeilOfAgesChannel(token.access_token);}catch(error){if(error instanceof YoutubeChannelMismatchError)return reply.code(409).send({error:error.message});throw error;}
       const db = requirePool();
       const inserted = await db.query("INSERT INTO youtube_uploads(file_hash,state) VALUES($1,'uploading') ON CONFLICT DO NOTHING RETURNING file_hash", [fileHash]);
       if (!inserted.rows.length) {

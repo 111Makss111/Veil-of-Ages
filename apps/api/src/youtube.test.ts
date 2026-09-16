@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import Fastify from 'fastify';
 
 delete process.env.DATABASE_URL;
-const { seal, unseal, setupSecretMatches, youtubeRoutes, googleToken } = await import('./youtube.js');
+const { seal, unseal, setupSecretMatches, youtubeRoutes, googleToken, requireVeilOfAgesChannel, YoutubeChannelMismatchError } = await import('./youtube.js');
 
 test('tokens use authenticated encryption; wrong key and tampering are rejected', () => {
   const secret = 'a'.repeat(43);
@@ -43,4 +43,15 @@ test('Google error bodies containing secrets are not propagated', async () => {
   globalThis.fetch = async () => new Response('private-refresh-token', { status: 400 });
   try { await assert.rejects(googleToken({}), { message: 'Google authorization failed' }); }
   finally { globalThis.fetch = original; }
+});
+
+test('YouTube channel guard accepts Veil of Ages and rejects another connected channel',async()=>{
+  const original=globalThis.fetch;
+  let title='Veil of Ages';
+  globalThis.fetch=async()=>new Response(JSON.stringify({items:[{id:'UCveilofages',snippet:{title}}]}));
+  try{
+    assert.equal((await requireVeilOfAgesChannel('access')).id,'UCveilofages');
+    title='Personal channel';
+    await assert.rejects(requireVeilOfAgesChannel('access'),error=>error instanceof YoutubeChannelMismatchError&&/Personal channel/.test(error.message));
+  }finally{globalThis.fetch=original;}
 });

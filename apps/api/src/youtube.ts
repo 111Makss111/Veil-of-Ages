@@ -12,6 +12,28 @@ const scope = YOUTUBE_SCOPES.join(' ');
 const hasRequiredScopes=(value:string|undefined)=>!value||YOUTUBE_SCOPES.every(required=>value.split(' ').includes(required));
 const hash = (value: string) => createHash('sha256').update(value).digest('base64url');
 const random = () => randomBytes(32).toString('base64url');
+const escapeHtml=(value:string)=>value.replace(/[&<>"']/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':'&quot;',"'":'&#39;'}[char]!));
+
+export type YoutubeChannelIdentity={id:string;title:string};
+export class YoutubeChannelMismatchError extends Error {
+  constructor(public readonly channel:YoutubeChannelIdentity){super(`Підключено канал «${channel.title}», а фабрика дозволяє публікацію лише у Veil of Ages. Онови підключення Google і вибери правильний YouTube-канал.`);this.name='YoutubeChannelMismatchError';}
+}
+
+export async function getYoutubeChannelIdentity(accessToken:string):Promise<YoutubeChannelIdentity>{
+  const url=new URL('https://www.googleapis.com/youtube/v3/channels');url.search=new URLSearchParams({part:'id,snippet',mine:'true'}).toString();
+  const response=await fetch(url,{redirect:'error',signal:AbortSignal.timeout(15000),headers:{Authorization:`Bearer ${accessToken}`}});
+  if(!response.ok)throw new Error('YouTube channel identity unavailable');
+  const data=z.object({items:z.array(z.object({id:z.string().min(1),snippet:z.object({title:z.string().min(1)})}))}).parse(await response.json());
+  const channel=data.items[0];if(!channel)throw new Error('YouTube channel identity unavailable');
+  return {id:channel.id,title:channel.snippet.title};
+}
+
+export async function requireVeilOfAgesChannel(accessToken:string):Promise<YoutubeChannelIdentity>{
+  const channel=await getYoutubeChannelIdentity(accessToken),expectedId=process.env.YOUTUBE_CHANNEL_ID?.trim();
+  const matches=expectedId?channel.id===expectedId:channel.title.trim().toLocaleLowerCase('en-US')==='veil of ages';
+  if(!matches)throw new YoutubeChannelMismatchError(channel);
+  return channel;
+}
 
 export function seal(value: string, secret: string): string {
   const key = createHash('sha256').update('youtube-token-encryption:').update(secret).digest();
@@ -110,9 +132,11 @@ export async function youtubeRoutes(app: FastifyInstance) {
       if (query.data.error || !query.data.code) return reply.code(400).type('text/html').send(page('<p>Дозвіл не надано. Підключення не змінено.</p>'));
       const token = await googleToken({ client_id: clientId, client_secret: clientSecret, code: query.data.code, redirect_uri: redirectUri, grant_type: 'authorization_code', code_verifier: unseal(result.rows[0].verifier_encrypted, secret) });
       if (!token.refresh_token || !hasRequiredScopes(token.scope)) throw new Error('YouTube upload/read permission or offline access missing');
+      await requireVeilOfAgesChannel(token.access_token);
       await requirePool().query('INSERT INTO youtube_connection(id, refresh_token_encrypted) VALUES(1,$1) ON CONFLICT(id) DO UPDATE SET refresh_token_encrypted=EXCLUDED.refresh_token_encrypted, updated_at=NOW()', [seal(token.refresh_token, secret)]);
       return reply.redirect('/auth/youtube/success', 303);
-    } catch {
+    } catch(error) {
+      if(error instanceof YoutubeChannelMismatchError)return reply.code(409).type('text/html').send(page(`<p>${escapeHtml(error.message)}</p><p><a href="/auth/youtube">Підключити інший канал</a></p>`));
       return reply.code(502).type('text/html').send(page('<p>Не вдалося зберегти доступ. Перевірте налаштування Google й спробуйте підключити ще раз. Секрети не показуються.</p>'));
     }
   });
