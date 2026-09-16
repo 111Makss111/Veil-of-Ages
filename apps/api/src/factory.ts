@@ -410,19 +410,28 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     const id=uuid.parse((req.params as {id:string}).id),body=z.discriminatedUnion('action',[
       z.object({target:z.enum(['video','shorts']),action:z.literal('reconcile')}).strict(),
       z.object({target:z.enum(['video','shorts']),action:z.literal('attach'),videoId:z.string().regex(/^[A-Za-z0-9_-]{11}$/)}).strict(),
-      z.object({target:z.enum(['video','shorts']),action:z.literal('reset'),confirmation:z.literal('NOT_ON_YOUTUBE')}).strict()
+      z.object({target:z.enum(['video','shorts']),action:z.literal('reset'),confirmation:z.literal('NOT_ON_YOUTUBE')}).strict(),
+      z.object({target:z.enum(['video','shorts']),action:z.literal('reroute'),confirmation:z.literal('WRONG_CHANNEL')}).strict()
     ]).parse(req.body);
     const assetColumn=body.target==='video'?'r.output_id':'r.short_output_id';
     const snapshot=(await requirePool().query(`SELECT r.state,r.short_publish_state,a.object_key FROM factory_releases r JOIN factory_assets a ON a.id=${assetColumn} WHERE r.id=$1`,[id])).rows[0];
     if(!snapshot)throw new FactoryError(404,'Випуск або його відеофайл не знайдено.');
     const snapshotUncertain=body.target==='video'?snapshot.state==='uncertain':snapshot.short_publish_state==='uncertain';
-    if(!snapshotUncertain)throw new FactoryError(409,'Ця передача вже не потребує відновлення. Онови сторінку.');
+    const snapshotPrivate=body.target==='video'?snapshot.state==='private':snapshot.short_publish_state==='private';
+    if(!snapshotUncertain&&!(body.action==='reroute'&&snapshotPrivate))throw new FactoryError(409,'Ця передача вже не потребує відновлення. Онови сторінку.');
     const uploadHash=createHash('sha256').update(await needStorage().get(snapshot.object_key,MAX_OUTPUT_BYTES)).digest('hex');
     return factoryLock(async db=>{
       const release=(await db.query('SELECT * FROM factory_releases WHERE id=$1 FOR UPDATE',[id])).rows[0];
       if(!release)throw new FactoryError(404,'Випуск не знайдено.');
       const uncertain=body.target==='video'?release.state==='uncertain':release.short_publish_state==='uncertain';
-      if(!uncertain)throw new FactoryError(409,'Ця передача вже не потребує відновлення. Онови сторінку.');
+      const isPrivate=body.target==='video'?release.state==='private':release.short_publish_state==='private';
+      if(!uncertain&&!(body.action==='reroute'&&isPrivate))throw new FactoryError(409,'Ця передача вже не потребує відновлення. Онови сторінку.');
+      if(body.action==='reroute'){
+        await db.query('DELETE FROM youtube_uploads WHERE file_hash=$1',[uploadHash]);
+        if(body.target==='video')await db.query("UPDATE factory_releases SET state='review',video_id=NULL,error=NULL,updated_at=NOW() WHERE id=$1",[id]);
+        else await db.query("UPDATE factory_releases SET short_publish_state=NULL,short_video_id=NULL,short_publish_error=NULL,updated_at=NOW() WHERE id=$1",[id]);
+        return {reconciled:false,retryAllowed:true,wrongChannelCleared:true};
+      }
       if(body.action==='attach'){
         await db.query("INSERT INTO youtube_uploads(file_hash,state,video_id) VALUES($1,'complete',$2) ON CONFLICT(file_hash) DO UPDATE SET state='complete',video_id=EXCLUDED.video_id",[uploadHash,body.videoId]);
         if(body.target==='video')await db.query("UPDATE factory_releases SET state='private',video_id=$2,error='Ролик прив’язано з YouTube Studio. Повтори встановлення обкладинки.',updated_at=NOW() WHERE id=$1",[id,body.videoId]);
