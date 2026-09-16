@@ -1,6 +1,6 @@
 import { pool } from './db.js';
 import { config } from './config.js';
-import { getYoutubeRefreshToken, googleToken } from './youtube.js';
+import { getYoutubeRefreshToken, googleToken, YOUTUBE_SCOPES } from './youtube.js';
 
 type Check = { id: string; state: 'connected' | 'error' | 'not_configured'; detail: string; checkedAt: string };
 const cache = new Map<string, { until: number; promise: Promise<Check> }>();
@@ -31,8 +31,8 @@ async function youtubeStatus(): Promise<Check> {
     if (!refresh) return empty;
     return check('youtube', true, async () => {
       const token = await googleToken({ client_id: process.env.YOUTUBE_CLIENT_ID!, client_secret: process.env.YOUTUBE_CLIENT_SECRET!, refresh_token: refresh, grant_type: 'refresh_token' });
-      if (token.scope && !token.scope.split(' ').includes('https://www.googleapis.com/auth/youtube.upload')) throw new Error('Missing upload scope');
-      return 'Доступ Google активний; завантаження ролика ще потрібно перевірити';
+      if (token.scope && !YOUTUBE_SCOPES.every(scope=>token.scope!.split(' ').includes(scope))) throw new Error('Missing YouTube scope');
+      return 'Доступ Google активний; завантаження та перевірка роликів дозволені';
     }, 300000);
   } catch {
     return { ...empty, state: 'error', detail: 'Не вдалося прочитати доступ YouTube; перевірте базу та секрет налаштування' };

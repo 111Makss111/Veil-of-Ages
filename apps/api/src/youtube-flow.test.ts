@@ -37,7 +37,7 @@ test('OAuth rejects unauthorized starts, binds browser, consumes state once and 
     assert.equal(body.get('redirect_uri'), 'https://api.example.test/auth/youtube/callback');
     assert.ok(body.get('code_verifier'));
     exchanges++;
-    return new Response(JSON.stringify({ access_token: 'access-private', refresh_token: 'refresh-private', scope: 'https://www.googleapis.com/auth/youtube.upload' }));
+    return new Response(JSON.stringify({ access_token: 'access-private', refresh_token: 'refresh-private', scope: 'https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly' }));
   };
   const app = Fastify();
   await app.register(youtubeRoutes);
@@ -54,7 +54,8 @@ test('OAuth rejects unauthorized starts, binds browser, consumes state once and 
     const destination = new URL(start.headers.location!);
     assert.equal(destination.origin, 'https://accounts.google.com');
     assert.equal(destination.searchParams.get('code_challenge_method'), 'S256');
-    assert.equal(destination.searchParams.get('scope'), 'https://www.googleapis.com/auth/youtube.upload');
+    assert.equal(destination.searchParams.get('scope'), 'https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly');
+    assert.equal(destination.searchParams.get('include_granted_scopes'),'true');
     const cookie = String(start.headers['set-cookie']).split(';')[0]!;
     assert.match(String(start.headers['set-cookie']), /HttpOnly; SameSite=Lax; Max-Age=600; Secure/);
     const callback = '/auth/youtube/callback?' + new URLSearchParams({ state: destination.searchParams.get('state')!, code: 'private-code' });

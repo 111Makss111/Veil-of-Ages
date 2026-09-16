@@ -4,7 +4,12 @@ import { z } from 'zod';
 import { config } from './config.js';
 import { pool, requirePool } from './db.js';
 
-const scope = 'https://www.googleapis.com/auth/youtube.upload';
+export const YOUTUBE_SCOPES = [
+  'https://www.googleapis.com/auth/youtube.upload',
+  'https://www.googleapis.com/auth/youtube.readonly'
+] as const;
+const scope = YOUTUBE_SCOPES.join(' ');
+const hasRequiredScopes=(value:string|undefined)=>!value||YOUTUBE_SCOPES.every(required=>value.split(' ').includes(required));
 const hash = (value: string) => createHash('sha256').update(value).digest('base64url');
 const random = () => randomBytes(32).toString('base64url');
 
@@ -86,7 +91,7 @@ export async function youtubeRoutes(app: FastifyInstance) {
       await db.query('DELETE FROM youtube_oauth_states WHERE expires_at < NOW()');
       await db.query("INSERT INTO youtube_oauth_states(state_hash, browser_hash, verifier_encrypted, expires_at) VALUES ($1,$2,$3,NOW() + INTERVAL '10 minutes')", [hash(state), hash(browser), seal(verifier, secret)]);
       const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
-      url.search = new URLSearchParams({ client_id: clientId, redirect_uri: redirectUri, response_type: 'code', scope, access_type: 'offline', prompt: 'consent select_account', state, code_challenge: hash(verifier), code_challenge_method: 'S256' }).toString();
+      url.search = new URLSearchParams({ client_id: clientId, redirect_uri: redirectUri, response_type: 'code', scope, access_type: 'offline', include_granted_scopes:'true', prompt: 'consent select_account', state, code_challenge: hash(verifier), code_challenge_method: 'S256' }).toString();
       return reply.header('Set-Cookie', cookie(browser, 600)).redirect(url.toString(), 303);
     } catch {
       return reply.code(503).send({ error: 'Unable to start authorization; try again' });
@@ -104,7 +109,7 @@ export async function youtubeRoutes(app: FastifyInstance) {
       if (!result.rows[0]) return reply.code(400).type('text/html').send(page('<p>Сесія минула або вже використана. Почніть підключення заново.</p>'));
       if (query.data.error || !query.data.code) return reply.code(400).type('text/html').send(page('<p>Дозвіл не надано. Підключення не змінено.</p>'));
       const token = await googleToken({ client_id: clientId, client_secret: clientSecret, code: query.data.code, redirect_uri: redirectUri, grant_type: 'authorization_code', code_verifier: unseal(result.rows[0].verifier_encrypted, secret) });
-      if (!token.refresh_token || (token.scope && !token.scope.split(' ').includes(scope))) throw new Error('Upload permission or offline access missing');
+      if (!token.refresh_token || !hasRequiredScopes(token.scope)) throw new Error('YouTube upload/read permission or offline access missing');
       await requirePool().query('INSERT INTO youtube_connection(id, refresh_token_encrypted) VALUES(1,$1) ON CONFLICT(id) DO UPDATE SET refresh_token_encrypted=EXCLUDED.refresh_token_encrypted, updated_at=NOW()', [seal(token.refresh_token, secret)]);
       return reply.redirect('/auth/youtube/success', 303);
     } catch {

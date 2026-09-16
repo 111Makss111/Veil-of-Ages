@@ -112,6 +112,7 @@ export async function getYoutubeVideoState(videoId:string,accessToken:string):Pr
   const url=new URL('https://www.googleapis.com/youtube/v3/videos');
   url.search=new URLSearchParams({part:'status,processingDetails',id:videoId}).toString();
   const response=await fetch(url,{redirect:'error',signal:AbortSignal.timeout(15000),headers:{Authorization:`Bearer ${accessToken}`}});
+  if(response.status===401||response.status===403)throw new Error('Підключення Google не має дозволу перевіряти приватні ролики. Онови підключення YouTube й надай новий дозвіл на перегляд.');
   if(!response.ok)throw new Error('YouTube video status unavailable');
   const data=z.object({items:z.array(z.object({
     status:z.object({uploadStatus:z.string().optional(),failureReason:z.string().optional(),rejectionReason:z.string().optional()}).optional(),
@@ -164,7 +165,7 @@ export async function youtubeUploadRoutes(app: FastifyInstance) {
     const query=z.object({videoId:z.string().regex(/^[A-Za-z0-9_-]{11}$/)}).safeParse(request.query);
     if(!query.success)return reply.code(400).send({error:'Некоректний ID ролика.'});
     try{const refresh=await getYoutubeRefreshToken();if(!refresh)return reply.code(409).send({error:'Спочатку підключіть YouTube через Google.'});const token=await googleToken({client_id:process.env.YOUTUBE_CLIENT_ID??'',client_secret:process.env.YOUTUBE_CLIENT_SECRET??'',refresh_token:refresh,grant_type:'refresh_token'});return await getYoutubeVideoState(query.data.videoId,token.access_token);}
-    catch{return reply.code(502).send({error:'Не вдалося перевірити ролик через YouTube API. Онови підключення Google і спробуй ще раз.'});}
+    catch(error){return reply.code(502).send({error:error instanceof Error&&error.message.startsWith('Підключення Google')?error.message:'Не вдалося перевірити ролик через YouTube API. Онови підключення Google і спробуй ще раз.'});}
   });
   app.post('/youtube/upload', {
     bodyLimit: MAX_VIDEO_BYTES, logLevel: 'silent',
