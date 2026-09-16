@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Script } from 'node:vm';
 import { writeFile } from 'node:fs/promises';
 import Fastify from 'fastify';
@@ -47,6 +47,8 @@ test('factory browser script parses and storage fails closed without configurati
   assert.match(factoryScript,/noteForm'\)\.requestSubmit/);
   assert.match(factoryScript,/function uploadRecovery/);
   assert.match(factoryScript,/NOT_ON_YOUTUBE/);
+  assert.match(factoryScript,/\['review','private','uncertain'\]\.includes\(r\.state\)/);
+  assert.match(factoryScript,/uploadRecovery\(r,'shorts'\)/);
   assert.match(factoryScript,/details\.open=needsAttention/);
   assert.match(factoryScript,/Розгорнути/);
   const before=process.env.R2_ACCOUNT_ID;delete process.env.R2_ACCOUNT_ID;
@@ -152,7 +154,7 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
     assert.equal((await post('/api/factory/releases/'+id+'/publish',{children:'no',synthetic:'yes',rights:false})).statusCode,400);assert.equal(published,0);
     const publish=await post('/api/factory/releases/'+id+'/publish',{children:'no',synthetic:'yes',rights:true});assert.equal(publish.statusCode,200,publish.body);assert.equal(published,1);assert.equal(publish.json().thumbnailSet,false);assert.equal(thumbnails,1,publish.body);
     rejectThumbnail=false;const thumbnailRetry=await post('/api/factory/releases/'+id+'/thumbnail',{});assert.equal(thumbnailRetry.statusCode,200,thumbnailRetry.body);assert.equal(thumbnailRetry.json().thumbnailSet,true);assert.equal(thumbnails,2);assert.equal(((await q('SELECT error FROM factory_releases WHERE id=$1',[id])).rows[0] as {error:string|null}).error,null);
-    const outputHash=((await q('SELECT hash FROM factory_assets WHERE id=$1',[release.output_id])).rows[0] as {hash:string}).hash;
+    const outputObjectKey=((await q('SELECT object_key FROM factory_assets WHERE id=$1',[release.output_id])).rows[0] as {object_key:string}).object_key,outputHash=createHash('sha256').update(objects.get(outputObjectKey)!).digest('hex');
     await q("INSERT INTO youtube_uploads(file_hash,state,video_id) VALUES($1,'complete','abcdefghijk')",[outputHash]);await q("UPDATE factory_releases SET state='uncertain',video_id=NULL,error='lost response' WHERE id=$1",[id]);
     const restored=await post('/api/factory/releases/'+id+'/resolve-upload',{target:'video',action:'reconcile'});assert.equal(restored.statusCode,200,restored.body);assert.equal(restored.json().videoId,'abcdefghijk');assert.equal(((await q('SELECT state FROM factory_releases WHERE id=$1',[id])).rows[0] as {state:string}).state,'private');
     await q("UPDATE youtube_uploads SET state='uncertain',video_id=NULL WHERE file_hash=$1",[outputHash]);await q("UPDATE factory_releases SET state='uncertain',video_id=NULL,error='lost response' WHERE id=$1",[id]);
@@ -167,6 +169,9 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
     assert.equal((await post('/api/factory/releases/'+id+'/publish-short',{children:'no',synthetic:'yes',rights:false})).statusCode,400);assert.equal(published,1);
     const shortPublish=await post('/api/factory/releases/'+id+'/publish-short',{children:'no',synthetic:'yes',rights:true});assert.equal(shortPublish.statusCode,200,shortPublish.body);assert.equal(published,2);assert.equal(shortPublish.json().videoId,'abcdefghijk');
     const shortPublished=(await q('SELECT short_publish_state,short_video_id FROM factory_releases WHERE id=$1',[id])).rows[0] as {short_publish_state:string;short_video_id:string};assert.equal(shortPublished.short_publish_state,'private');assert.equal(shortPublished.short_video_id,'abcdefghijk');
+    const shortOutput=(await q('SELECT a.object_key FROM factory_releases r JOIN factory_assets a ON a.id=r.short_output_id WHERE r.id=$1',[id])).rows[0] as {object_key:string},shortHash=createHash('sha256').update(objects.get(shortOutput.object_key)!).digest('hex');
+    await q("INSERT INTO youtube_uploads(file_hash,state,video_id) VALUES($1,'complete','shorts00001')",[shortHash]);await q("UPDATE factory_releases SET state='uncertain',short_publish_state='uncertain',short_video_id=NULL WHERE id=$1",[id]);
+    const restoredShort=await post('/api/factory/releases/'+id+'/resolve-upload',{target:'shorts',action:'reconcile'});assert.equal(restoredShort.statusCode,200,restoredShort.body);assert.equal(restoredShort.json().videoId,'shorts00001');const restoredShortRow=(await q('SELECT state,short_publish_state FROM factory_releases WHERE id=$1',[id])).rows[0] as {state:string;short_publish_state:string};assert.equal(restoredShortRow.state,'uncertain');assert.equal(restoredShortRow.short_publish_state,'private');await q("UPDATE factory_releases SET state='private' WHERE id=$1",[id]);
     assert.equal((await post('/api/factory/releases/'+id+'/publish',{children:'no',synthetic:'yes',rights:true})).statusCode,409);assert.equal(published,2);
     const reconcileIdeaId=randomUUID(),reconcileSong={title:release.title,concept:'A keeper returns to the northern castle and completes an old promise before winter.',lyrics:'[Verse 1]\n'+('The northern road remembers every name\n'.repeat(12))+'[Chorus]\n'+('We carry home the flame again\n'.repeat(8)),sunoPrompt:'Epic Viking anthem with a low male lead, controlled choir, frame drums and bowed strings.',artworkPrompt:'Two original adult Vikings beside a northern castle, cinematic realism, no text or logos.'};
     await q("INSERT INTO factory_song_ideas(id,channel_id,mode,brief,state,content,approved_at) VALUES($1,'veil-of-ages','viking-anthem','Reconcile test','approved',$2,NOW())",[reconcileIdeaId,JSON.stringify(reconcileSong)]);

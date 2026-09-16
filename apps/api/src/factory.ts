@@ -292,7 +292,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     const {release,fresh}=await factoryLock(async db=>{
       if((await db.query("SELECT id FROM factory_releases WHERE state='rendering' OR short_state='rendering'")).rowCount)throw new FactoryError(409,'Лінія вже монтує відео. Дочекайся завершення.');
       const current=(await db.query('SELECT * FROM factory_releases WHERE id=$1 FOR UPDATE',[id])).rows[0];
-      if(!current||!['review','private'].includes(current.state))throw new FactoryError(409,'Shorts можна створити лише для готового повного випуску.');
+      if(!current||!['review','private','uncertain'].includes(current.state))throw new FactoryError(409,'Shorts можна створити лише для готового повного випуску.');
       if(current.short_state==='review'&&!regenerate)return {release:current,fresh:false};
       if(regenerate&&current.short_publish_state)throw new FactoryError(409,'Цей Shorts уже передавався на YouTube. Не перезаписуємо його автоматично.');
       let outputId=current.short_output_id;
@@ -412,26 +412,31 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
       z.object({target:z.enum(['video','shorts']),action:z.literal('attach'),videoId:z.string().regex(/^[A-Za-z0-9_-]{11}$/)}).strict(),
       z.object({target:z.enum(['video','shorts']),action:z.literal('reset'),confirmation:z.literal('NOT_ON_YOUTUBE')}).strict()
     ]).parse(req.body);
+    const assetColumn=body.target==='video'?'r.output_id':'r.short_output_id';
+    const snapshot=(await requirePool().query(`SELECT r.state,r.short_publish_state,a.object_key FROM factory_releases r JOIN factory_assets a ON a.id=${assetColumn} WHERE r.id=$1`,[id])).rows[0];
+    if(!snapshot)throw new FactoryError(404,'Випуск або його відеофайл не знайдено.');
+    const snapshotUncertain=body.target==='video'?snapshot.state==='uncertain':snapshot.short_publish_state==='uncertain';
+    if(!snapshotUncertain)throw new FactoryError(409,'Ця передача вже не потребує відновлення. Онови сторінку.');
+    const uploadHash=createHash('sha256').update(await needStorage().get(snapshot.object_key,MAX_OUTPUT_BYTES)).digest('hex');
     return factoryLock(async db=>{
-      const assetJoin=body.target==='video'?'a.id=r.output_id':'a.id=r.short_output_id';
-      const release=(await db.query(`SELECT r.*,a.hash AS upload_hash FROM factory_releases r JOIN factory_assets a ON ${assetJoin} WHERE r.id=$1 FOR UPDATE`,[id])).rows[0];
-      if(!release)throw new FactoryError(404,'Випуск або його відеофайл не знайдено.');
+      const release=(await db.query('SELECT * FROM factory_releases WHERE id=$1 FOR UPDATE',[id])).rows[0];
+      if(!release)throw new FactoryError(404,'Випуск не знайдено.');
       const uncertain=body.target==='video'?release.state==='uncertain':release.short_publish_state==='uncertain';
       if(!uncertain)throw new FactoryError(409,'Ця передача вже не потребує відновлення. Онови сторінку.');
       if(body.action==='attach'){
-        await db.query("INSERT INTO youtube_uploads(file_hash,state,video_id) VALUES($1,'complete',$2) ON CONFLICT(file_hash) DO UPDATE SET state='complete',video_id=EXCLUDED.video_id",[release.upload_hash,body.videoId]);
+        await db.query("INSERT INTO youtube_uploads(file_hash,state,video_id) VALUES($1,'complete',$2) ON CONFLICT(file_hash) DO UPDATE SET state='complete',video_id=EXCLUDED.video_id",[uploadHash,body.videoId]);
         if(body.target==='video')await db.query("UPDATE factory_releases SET state='private',video_id=$2,error='Ролик прив’язано з YouTube Studio. Повтори встановлення обкладинки.',updated_at=NOW() WHERE id=$1",[id,body.videoId]);
         else await db.query("UPDATE factory_releases SET short_publish_state='private',short_video_id=$2,short_publish_error=NULL,updated_at=NOW() WHERE id=$1",[id,body.videoId]);
         return {reconciled:true,videoId:body.videoId,attached:true};
       }
-      const upload=(await db.query('SELECT state,video_id FROM youtube_uploads WHERE file_hash=$1',[release.upload_hash])).rows[0];
+      const upload=(await db.query('SELECT state,video_id FROM youtube_uploads WHERE file_hash=$1',[uploadHash])).rows[0];
       if(upload?.state==='complete'&&/^[A-Za-z0-9_-]{11}$/.test(upload.video_id||'')){
         if(body.target==='video')await db.query("UPDATE factory_releases SET state='private',video_id=$2,error='Відео знайдено серед завершених передач. За потреби повтори встановлення обкладинки.',updated_at=NOW() WHERE id=$1",[id,upload.video_id]);
         else await db.query("UPDATE factory_releases SET short_publish_state='private',short_video_id=$2,short_publish_error=NULL,updated_at=NOW() WHERE id=$1",[id,upload.video_id]);
         return {reconciled:true,videoId:upload.video_id};
       }
       if(body.action==='reconcile')throw new FactoryError(409,'Завершену передачу не знайдено. Перевір YouTube Studio. Якщо ролика там немає, дозволь нову спробу окремою кнопкою.');
-      await db.query("DELETE FROM youtube_uploads WHERE file_hash=$1 AND state<>'complete'",[release.upload_hash]);
+      await db.query("DELETE FROM youtube_uploads WHERE file_hash=$1 AND state<>'complete'",[uploadHash]);
       if(body.target==='video')await db.query("UPDATE factory_releases SET state='review',video_id=NULL,error=NULL,updated_at=NOW() WHERE id=$1",[id]);
       else await db.query("UPDATE factory_releases SET short_publish_state=NULL,short_video_id=NULL,short_publish_error=NULL,updated_at=NOW() WHERE id=$1",[id]);
       return {reconciled:false,retryAllowed:true};
@@ -461,7 +466,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
   app.post('/api/factory/releases/:id/publish-short',{logLevel:'silent'},async(req,reply)=>{
     const id=uuid.parse((req.params as {id:string}).id);
     const meta=z.object({children:z.enum(['yes','no']),synthetic:z.enum(['yes','no']),rights:z.literal(true)}).strict().parse(req.body);
-    const release=(await requirePool().query("UPDATE factory_releases SET short_publish_state='publishing',short_publish_error=NULL,updated_at=NOW() WHERE id=$1 AND state IN ('review','private') AND short_state='review' AND short_output_id IS NOT NULL AND short_publish_state IS NULL RETURNING *",[id])).rows[0];
+    const release=(await requirePool().query("UPDATE factory_releases SET short_publish_state='publishing',short_publish_error=NULL,updated_at=NOW() WHERE id=$1 AND state IN ('review','private','uncertain') AND short_state='review' AND short_output_id IS NOT NULL AND short_publish_state IS NULL RETURNING *",[id])).rows[0];
     if(!release)throw new FactoryError(409,'Shorts не готовий або вже передавався. Не повторюй невідоме завантаження без перевірки YouTube.');
     let mayHaveUploaded=false;
     try{
