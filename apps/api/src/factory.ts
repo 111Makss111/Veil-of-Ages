@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import multipart from '@fastify/multipart';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
@@ -18,17 +18,28 @@ import { ACTIVE_EFFECT_IDS, EFFECT_CATALOG, motionIntensitySchema } from './fact
 import { approveSongIdea, createSongIdea, textGeneratorConfigured, textGeneratorProvider } from './factory-song.js';
 import { songMode, songPackageSchema } from './factory-song-domain.js';
 import { buildShortsArtwork, buildYoutubeThumbnail } from './factory-thumbnail.js';
+import { waitForMemory } from './memory-budget.js';
+import { uploadPrivateVideoFile, YoutubeUploadOutcomeError, type Metadata as YoutubeMetadata } from './youtube-upload.js';
 
 const uuid=z.string().uuid();
 const vocal=z.enum(['instrumental','choir']);
 const containerId=z.string().regex(/^[a-z0-9-]{2,40}$/);
 const UPLOAD_MAX=25*1024*1024;
 const SHORTS_MAX_BYTES=16*1024*1024;
-export async function factoryRoutes(app: FastifyInstance, options: { storage?: ObjectStore; render?: typeof renderMedia; probe?: (file: string, kind: string) => Promise<number>; imageGenerator?: ImageGenerator|null } = {}) {
+export async function factoryRoutes(app: FastifyInstance, options: { storage?: ObjectStore; render?: typeof renderMedia; probe?: (file: string, kind: string) => Promise<number>; imageGenerator?: ImageGenerator|null; publisher?:(path:string,metadata:YoutubeMetadata)=>Promise<{videoId:string;duplicate:boolean}> } = {}) {
   const storage=options.storage ?? createObjectStore();
   const imageGenerator=options.imageGenerator===undefined?createPreferredImageGenerator():options.imageGenerator;
   const configuredImageProvider=options.imageGenerator===undefined?imageGeneratorProvider():options.imageGenerator?'Генератор образів':null;
+  const publishVideo=options.publisher??uploadPrivateVideoFile;
   const tasks=new Set<Promise<void>>();const jobs=new Map<string,AbortController>();let uploading=false;
+  let heavyOperation:{token:symbol;label:string}|null=null;
+  const beginHeavy=(label:string)=>{
+    if(heavyOperation)throw new FactoryError(409,`Зараз виконується важка операція «${heavyOperation.label}». Вона збереже свій етап, після чого можна продовжити.`);
+    const token=Symbol(label);heavyOperation={token,label};return token;
+  };
+  const endHeavy=(token:symbol)=>{if(heavyOperation?.token===token)heavyOperation=null;};
+  const storageToFile=async(s:ObjectStore,key:string,path:string,max:number)=>s.getFile?s.getFile(key,path,max):s.get(key,max).then(data=>writeFile(path,data).then(()=>data.length));
+  const fileToStorage=async(s:ObjectStore,key:string,path:string,type:string)=>s.putFile?s.putFile(key,path,type):(async()=>{const data=await readFile(path);await s.put(key,data,type);return data.length;})();
   const needStorage=()=>{if(!storage)throw new FactoryError(503,'Підключи приватне сховище R2 в Render. Файли ще не завантажуються.');return storage;};
   app.addHook('onRequest',async(req,reply)=>{
     reply.header('Cache-Control','no-store').header('X-Content-Type-Options','nosniff').header('Referrer-Policy','same-origin')
@@ -253,7 +264,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
       return {deleted:true,freed:Number(output?.bytes||0)+Number(shortOutput?.bytes||0)+Number(shortCover?.bytes||0)+removableScenes.reduce((sum,scene)=>sum+Number(scene.bytes||0),0),keptTrackId:release.track_id};
     });
   });
-  function workShort(release:Record<string,any>){
+  function workShort(release:Record<string,any>,heavyToken:symbol){
     const controller=new AbortController();jobs.set(release.id,controller);
     const task=(async()=>{let dir:string|undefined,lastWrite=0;
       const progress=(value:number)=>{const now=Date.now();if(value<99&&now-lastWrite<1500)return;lastWrite=now;void requirePool().query("UPDATE factory_releases SET short_progress=$2,short_updated_at=NOW() WHERE id=$1 AND short_state='rendering'",[release.id,Math.max(1,Math.min(99,Math.round(value)))]).catch(()=>{});};
@@ -267,7 +278,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
         ]);
         if(!track||!cover||!output)throw Error('Missing Shorts material');
         const audio=join(dir,'audio'),image=join(dir,'shorts.jpg'),video=join(dir,'shorts.mp4');
-        const audioData=await s.get(track.object_key,UPLOAD_MAX);let artworkData:Buffer;
+        await storageToFile(s,track.object_key,audio,UPLOAD_MAX);let artworkData:Buffer;
         if(shortCover){
           if(shortCover.state==='ready')artworkData=await s.get(shortCover.object_key,8*1024*1024);
           else{
@@ -277,19 +288,21 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
             await requirePool().query("UPDATE factory_assets SET state='ready',bytes=$2,type=$3 WHERE id=$1",[shortCover.id,generated.data.length,generated.type]);
           }
         }else artworkData=await s.get(cover.object_key,8*1024*1024);
-        await Promise.all([writeFile(audio,audioData),buildShortsArtwork(artworkData,release.title).then(data=>writeFile(image,data))]);
+        await buildShortsArtwork(artworkData,release.title).then(data=>writeFile(image,data));
         progress(10);
+        await waitForMemory(controller.signal,budget=>app.log.warn({operation:'shorts',memoryPercent:Math.round(budget.ratio*100)},'Factory waits at a safe memory checkpoint'));
         await (options.render??renderMedia)(image,audio,video,track.type==='audio/wav'?'wav':'mp3',controller.signal,'shorts',release.recipe.visualPreset,p=>progress(10+p.percent*.82),'cinematic',ACTIVE_EFFECT_IDS.filter(id=>id!=='story.three-scenes'&&id!=='transition.scene-crossfades'&&id!=='camera.center-push'));
-        const result=await readFile(video);if(result.length>SHORTS_MAX_BYTES)throw Error('Shorts exceeds reservation');
-        progress(94);await s.put(output.object_key,result,'video/mp4');
-        await factoryLock(async db=>{await db.query("UPDATE factory_assets SET state='ready',bytes=$2 WHERE id=$1",[output.id,result.length]);await db.query("UPDATE factory_releases SET short_state='review',short_progress=100,short_error=NULL,short_updated_at=NOW() WHERE id=$1 AND short_state='rendering'",[release.id]);});
+        const size=(await stat(video)).size;if(size>SHORTS_MAX_BYTES)throw Error('Shorts exceeds reservation');
+        progress(94);await waitForMemory(controller.signal,budget=>app.log.warn({operation:'shorts-upload',memoryPercent:Math.round(budget.ratio*100)},'Factory waits at a safe memory checkpoint'));await fileToStorage(s,output.object_key,video,'video/mp4');
+        await factoryLock(async db=>{await db.query("UPDATE factory_assets SET state='ready',bytes=$2 WHERE id=$1",[output.id,size]);await db.query("UPDATE factory_releases SET short_state='review',short_progress=100,short_error=NULL,short_updated_at=NOW() WHERE id=$1 AND short_state='rendering'",[release.id]);});
       }catch(error){app.log.error({releaseId:release.id},'Factory Shorts failed');const message=release.short_cover_id?'Не вдалося створити вертикальний образ або скласти Shorts. Натисни повтор — система збереже пісню та спробує образ 9:16 ще раз.':'Не вдалося скласти Shorts. Матеріали збережено — можна повторити.';await requirePool().query("UPDATE factory_releases SET short_state='failed',short_error=$2,short_updated_at=NOW() WHERE id=$1 AND short_state='rendering'",[release.id,message]).catch(()=>{});}
-      finally{if(jobs.get(release.id)===controller)jobs.delete(release.id);if(dir)await rm(dir,{recursive:true,force:true});}
+      finally{if(jobs.get(release.id)===controller)jobs.delete(release.id);if(dir)await rm(dir,{recursive:true,force:true});endHeavy(heavyToken);}
     })();tasks.add(task);void task.finally(()=>tasks.delete(task));
   }
   app.post('/api/factory/releases/:id/shorts',async(req,reply)=>{
     needStorage();if(!options.render)await checkMediaTools();const id=uuid.parse((req.params as {id:string}).id),{regenerate}=z.object({regenerate:z.boolean().optional().default(false)}).strict().parse(req.body??{});
-    const {release,fresh}=await factoryLock(async db=>{
+    let heavyToken:symbol|null=beginHeavy('монтаж Shorts');
+    try{const {release,fresh}=await factoryLock(async db=>{
       if((await db.query("SELECT id FROM factory_releases WHERE state='rendering' OR short_state='rendering'")).rowCount)throw new FactoryError(409,'Лінія вже монтує відео. Дочекайся завершення.');
       const current=(await db.query('SELECT * FROM factory_releases WHERE id=$1 FOR UPDATE',[id])).rows[0];
       if(!current||!['review','private','uncertain'].includes(current.state))throw new FactoryError(409,'Shorts можна створити лише для готового повного випуску.');
@@ -305,7 +318,8 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
       }
       const updated=(await db.query("UPDATE factory_releases SET short_output_id=$2,short_cover_id=$3,short_cover_prompt=$4,short_cover_seed=$5,short_state='rendering',short_progress=1,short_error=NULL,short_started_at=NOW(),short_updated_at=NOW() WHERE id=$1 RETURNING *",[id,outputId,shortCoverId,shortPrompt,shortSeed])).rows[0];return {release:updated,fresh:true};
     });
-    if(fresh)workShort(release);return reply.code(fresh?202:200).send({id,shortState:release.short_state});
+    if(fresh){workShort(release,heavyToken);heavyToken=null;}return reply.code(fresh?202:200).send({id,shortState:release.short_state});}
+    finally{if(heavyToken)endHeavy(heavyToken);}
   });
   app.post('/api/factory/releases/:id/cancel',async req=>{
     const id=uuid.parse((req.params as {id:string}).id);
@@ -318,7 +332,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     });
     jobs.get(id)?.abort();return {cancelled:true,mode};
   });
-  function work(release:Record<string,any>){
+  function work(release:Record<string,any>,heavyToken:symbol){
     const controller=new AbortController();jobs.set(release.id,controller);
     const task=(async()=>{
       let dir:string|undefined,stage='preparing',progress=Number(release.progress)||2,lastStage='',lastProgress=-1,lastWrite=0;
@@ -353,11 +367,11 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
         scenes=scenes.slice(0,Math.max(1,Math.min(3,Number(release.recipe?.productionPlan?.sceneCount)||1)));
         const audio=join(workDir,'audio'),images=scenes.map((_scene,index)=>join(workDir,`scene-${index}`)),video=join(workDir,'video.mp4');
         await update('downloading',7,'Отримуємо музику з приватного сховища R2.',true);
-        await writeFile(audio,await s.get(track.object_key,UPLOAD_MAX));
+        await storageToFile(s,track.object_key,audio,UPLOAD_MAX);
         for(const [index,scene] of scenes.entries()){
           if(scene.state==='ready'){
             await update('downloading',10+index*5,`Отримуємо образ ${index+1} із ${scenes.length} з R2.`,true);
-            await writeFile(images[index]!,await s.get(scene.object_key,8*1024*1024));
+            await storageToFile(s,scene.object_key,images[index]!,8*1024*1024);
           }else{
             if(release.recipe.coverMode!=='ai'||!imageGenerator)throw Error('Image generator unavailable');
             await update('generating-image',10+index*6,`${configuredImageProvider||'Генератор'} створює образ ${index+1} із ${scenes.length}: ${scene.label}.`,true);
@@ -367,6 +381,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
             await requirePool().query("UPDATE factory_assets SET state='ready',bytes=$2,type=$3 WHERE id=$1",[scene.asset_id,generated.data.length,generated.type]);
           }
         }
+        await waitForMemory(controller.signal,budget=>{void update('waiting-memory',30,`Пауза між етапами: пам’ять зайнята на ${Math.round(budget.ratio*100)}%. Матеріали вже збережено.`,true);});
         await requirePool().query("UPDATE factory_releases SET render_started_at=NOW(),processed_seconds=0,render_duration=NULL,updated_at=NOW() WHERE id=$1 AND state='rendering'",[release.id]);
         await update('rendering',31,`Запускаємо монтаж V2: ${scenes.length} сцени, атмосфера і звук.`,true);
         const renderEffects=(release.recipe.productionPlan?.effects??ACTIVE_EFFECT_IDS).filter((id:string)=>id!=='camera.center-push');
@@ -376,12 +391,13 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
           void update('rendering',overall,'Змонтовано '+clock(processed)+' із '+clock(p.duration)+' музики.',false,{seconds:processed,duration:p.duration});
         },release.recipe.motionIntensity||'cinematic',renderEffects);
         await update('verifying',91,'Перевіряємо тривалість, звук, роздільність і розмір відео.',true);
-        const result=await readFile(video);if(result.length>MAX_OUTPUT_BYTES)throw Error('Output exceeds reservation');
+        const size=(await stat(video)).size;if(size>MAX_OUTPUT_BYTES)throw Error('Output exceeds reservation');
+        await waitForMemory(controller.signal,budget=>{void update('waiting-memory',95,`Монтаж збережено. Чекаємо звільнення пам’яті перед передачею (${Math.round(budget.ratio*100)}%).`,true);});
         await update('uploading',96,'Передаємо готове відео до приватного сховища R2.',true);
-        await s.put(output.object_key,result,'video/mp4');
+        await fileToStorage(s,output.object_key,video,'video/mp4');
         await writes;
         await factoryLock(async db=>{
-          await db.query("UPDATE factory_assets SET state='ready',bytes=$2 WHERE id=$1",[output.id,result.length]);
+          await db.query("UPDATE factory_assets SET state='ready',bytes=$2 WHERE id=$1",[output.id,size]);
           await db.query("UPDATE factory_releases SET state='review',stage='complete',progress=100,progress_detail='Відео готове до твоєї перевірки.',error=NULL,updated_at=NOW() WHERE id=$1 AND state='rendering'",[release.id]);
         });
       }catch(error){
@@ -389,22 +405,26 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
         const reason=error instanceof MediaToolError?error.reason:'operation';
         app.log.error({releaseId:release.id,stage,reason},'Factory release failed');
         await requirePool().query("UPDATE factory_releases SET state='failed',stage=$2,progress=$3,progress_detail='Зупинено на цьому етапі.',error=$4,updated_at=NOW() WHERE id=$1 AND state='rendering'",[release.id,stage,progress,failure(error)]).catch(()=>{});
-      }finally{if(jobs.get(release.id)===controller)jobs.delete(release.id);if(dir)await rm(dir,{recursive:true,force:true});}
+      }finally{if(jobs.get(release.id)===controller)jobs.delete(release.id);if(dir)await rm(dir,{recursive:true,force:true});endHeavy(heavyToken);}
     })();tasks.add(task);void task.finally(()=>tasks.delete(task));
   }
   app.post('/api/factory/releases',async(req,reply)=>{
     const {requestKey,channelId,ideaId}=z.object({requestKey:uuid,channelId:containerId.default('veil-of-ages'),ideaId:uuid.optional()}).strict().parse(req.body);
-    const s=needStorage();if(!options.render)await checkMediaTools();
-    const {release,fresh}=await startRelease(s,requestKey,!!imageGenerator,channelId,ideaId);if(fresh)work(release);
-    return reply.code(fresh?202:200).send({id:release.id,state:release.state});
+    const existing=(await requirePool().query('SELECT id,state FROM factory_releases WHERE request_key=$1',[requestKey])).rows[0];
+    if(existing)return reply.code(200).send({id:existing.id,state:existing.state});
+    const s=needStorage();if(!options.render)await checkMediaTools();let heavyToken:symbol|null=beginHeavy('монтаж повного відео');
+    try{const {release,fresh}=await startRelease(s,requestKey,!!imageGenerator,channelId,ideaId);if(fresh){work(release,heavyToken);heavyToken=null;}
+    return reply.code(fresh?202:200).send({id:release.id,state:release.state});}
+    finally{if(heavyToken)endHeavy(heavyToken);}
   });
   app.post('/api/factory/releases/:id/retry',async(req,reply)=>{
-    needStorage();const id=uuid.parse((req.params as {id:string}).id);
-    const release=await factoryLock(async db=>{
+    needStorage();const id=uuid.parse((req.params as {id:string}).id);let heavyToken:symbol|null=beginHeavy('повтор монтажу');
+    try{const release=await factoryLock(async db=>{
       if((await db.query("SELECT id FROM factory_releases WHERE state='rendering' OR short_state='rendering'")).rowCount)throw new FactoryError(409,'Лінія зайнята.');
       const r=(await db.query("UPDATE factory_releases SET state='rendering',stage='preparing',progress=2,progress_detail='Готуємо полегшений повтор з одним образом і тими самими матеріалами.',recipe=jsonb_set(recipe,'{productionPlan,sceneCount}','1'::jsonb,true),error=NULL,started_at=NOW(),render_started_at=NULL,processed_seconds=NULL,render_duration=NULL,updated_at=NOW() WHERE id=$1 AND state='failed' RETURNING *",[id])).rows[0];
       if(!r)throw new FactoryError(409,'Повтор доступний лише для невдалого складання.');return r;
-    });work(release);return reply.code(202).send({id});
+    });work(release,heavyToken);heavyToken=null;return reply.code(202).send({id});}
+    finally{if(heavyToken)endHeavy(heavyToken);}
   });
   app.post('/api/factory/releases/:id/resolve-upload',async req=>{
     const id=uuid.parse((req.params as {id:string}).id),body=z.discriminatedUnion('action',[
@@ -469,45 +489,55 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
   app.post('/api/factory/releases/:id/publish',{logLevel:'silent'},async(req,reply)=>{
     const id=uuid.parse((req.params as {id:string}).id);
     const meta=z.object({children:z.enum(['yes','no']),synthetic:z.enum(['yes','no']),rights:z.literal(true)}).strict().parse(req.body);
+    const heavyToken=beginHeavy('передача повного відео на YouTube');
+    let publishDir:string|undefined;
+    try{
+    await waitForMemory(undefined,budget=>app.log.warn({operation:'youtube-video',memoryPercent:Math.round(budget.ratio*100)},'YouTube upload waits at a safe memory checkpoint'));
     const release=(await requirePool().query("UPDATE factory_releases SET state='publishing',updated_at=NOW() WHERE id=$1 AND state='review' RETURNING *",[id])).rows[0];
     if(!release)throw new FactoryError(409,'Випуск не готовий або вже передавався. Не повторюй невідоме завантаження без перевірки YouTube.');
     let mayHaveUploaded=false;
     try{
       const a=(await requirePool().query('SELECT * FROM factory_assets WHERE id=$1',[release.output_id])).rows[0];
-      const file=await needStorage().get(a.object_key,MAX_OUTPUT_BYTES);
-      const result=await app.inject({method:'POST',url:'/youtube/upload?'+new URLSearchParams({title:release.title,children:meta.children,synthetic:meta.synthetic,description:String(release.recipe?.youtubeDescription||'Original music release from Veil of Ages.'),tags:Array.isArray(release.recipe?.youtubeTags)?release.recipe.youtubeTags.join(','):''}),headers:{cookie:req.headers.cookie??'',origin:ownerOrigin(),'content-type':'video/mp4'},payload:file});
-      const data=result.json();if(result.statusCode!==200||!data.videoId){mayHaveUploaded=data.uncertain===true;throw new FactoryError(result.statusCode===409?409:502,data.error||'YouTube не прийняв відео.');}mayHaveUploaded=true;
+      publishDir=await mkdtemp(join(tmpdir(),'veil-publish-'));const file=join(publishDir,'video.mp4');await storageToFile(needStorage(),a.object_key,file,MAX_OUTPUT_BYTES);
+      const data=await publishVideo(file,{title:release.title,children:meta.children,synthetic:meta.synthetic,description:String(release.recipe?.youtubeDescription||'Original music release from Veil of Ages.'),tags:Array.isArray(release.recipe?.youtubeTags)?release.recipe.youtubeTags:[]});mayHaveUploaded=true;
       let thumbnailWarning:string|null=null;
       try{await attachYoutubeThumbnail(release,data.videoId,req.headers.cookie??'');}
       catch(error){thumbnailWarning=error instanceof FactoryError?error.message:'Відео завантажено приватно, але YouTube не підтвердив власну обкладинку.';}
       await requirePool().query("UPDATE factory_releases SET state='private',video_id=$2,error=$3,updated_at=NOW() WHERE id=$1",[id,data.videoId,thumbnailWarning]);return {videoId:data.videoId,thumbnailSet:!thumbnailWarning,warning:thumbnailWarning};
     }catch(error){
+      if(error instanceof YoutubeUploadOutcomeError)mayHaveUploaded=error.uncertain;
       if(!mayHaveUploaded){const message=error instanceof FactoryError?error.message:'Передача не почалася. Перевір підключення YouTube і повтори спробу.';await requirePool().query("UPDATE factory_releases SET state='review',error=$2,updated_at=NOW() WHERE id=$1",[id,message]);throw error instanceof FactoryError?error:new FactoryError(502,message);}
       await requirePool().query("UPDATE factory_releases SET state='uncertain',error='Передачу не підтверджено. Перевір YouTube Studio; автоматичний повтор заблоковано.',updated_at=NOW() WHERE id=$1",[id]);
       return reply.code(502).send({error:'Перевір YouTube Studio перед повторними діями. Результат передачі невідомий.'});
     }
+    }finally{if(publishDir)await rm(publishDir,{recursive:true,force:true});endHeavy(heavyToken);}
   });
   app.post('/api/factory/releases/:id/publish-short',{logLevel:'silent'},async(req,reply)=>{
     const id=uuid.parse((req.params as {id:string}).id);
     const meta=z.object({children:z.enum(['yes','no']),synthetic:z.enum(['yes','no']),rights:z.literal(true)}).strict().parse(req.body);
+    const heavyToken=beginHeavy('передача Shorts на YouTube');
+    let publishDir:string|undefined;
+    try{
+    await waitForMemory(undefined,budget=>app.log.warn({operation:'youtube-shorts',memoryPercent:Math.round(budget.ratio*100)},'YouTube upload waits at a safe memory checkpoint'));
     const release=(await requirePool().query("UPDATE factory_releases SET short_publish_state='publishing',short_publish_error=NULL,updated_at=NOW() WHERE id=$1 AND state IN ('review','private','uncertain') AND short_state='review' AND short_output_id IS NOT NULL AND short_publish_state IS NULL RETURNING *",[id])).rows[0];
     if(!release)throw new FactoryError(409,'Shorts не готовий або вже передавався. Не повторюй невідоме завантаження без перевірки YouTube.');
     let mayHaveUploaded=false;
     try{
       const asset=(await requirePool().query("SELECT * FROM factory_assets WHERE id=$1 AND kind='video' AND state='ready'",[release.short_output_id])).rows[0];
       if(!asset)throw Error('Shorts asset not ready');
-      const file=await needStorage().get(asset.object_key,MAX_OUTPUT_BYTES);
-      const tags=Array.isArray(release.recipe?.youtubeTags)?[...release.recipe.youtubeTags,'Shorts'].join(','):'Viking music,Veil of Ages,Shorts';
+      publishDir=await mkdtemp(join(tmpdir(),'veil-publish-short-'));const file=join(publishDir,'shorts.mp4');await storageToFile(needStorage(),asset.object_key,file,MAX_OUTPUT_BYTES);
+      const tags=Array.isArray(release.recipe?.youtubeTags)?[...release.recipe.youtubeTags,'Shorts']:['Viking music','Veil of Ages','Shorts'];
       const description=String(release.recipe?.youtubeDescription||'Original Viking song from Veil of Ages.')+'\n\nListen to the full song on Veil of Ages. #Shorts';
       const title=(release.title+' | Viking Song #Shorts').slice(0,100);
-      const result=await app.inject({method:'POST',url:'/youtube/upload?'+new URLSearchParams({title,children:meta.children,synthetic:meta.synthetic,description,tags}),headers:{cookie:req.headers.cookie??'',origin:ownerOrigin(),'content-type':'video/mp4'},payload:file});
-      const data=result.json();if(result.statusCode!==200||!data.videoId){mayHaveUploaded=data.uncertain===true;throw new FactoryError(result.statusCode===409?409:502,data.error||'YouTube не прийняв Shorts.');}mayHaveUploaded=true;
+      const data=await publishVideo(file,{title,children:meta.children,synthetic:meta.synthetic,description,tags});mayHaveUploaded=true;
       await requirePool().query("UPDATE factory_releases SET short_publish_state='private',short_video_id=$2,short_publish_error=NULL,updated_at=NOW() WHERE id=$1",[id,data.videoId]);
       return {videoId:data.videoId};
     }catch(error){
+      if(error instanceof YoutubeUploadOutcomeError)mayHaveUploaded=error.uncertain;
       if(!mayHaveUploaded){const message=error instanceof FactoryError?error.message:'Передача Shorts не почалася. Перевір підключення YouTube і повтори спробу.';await requirePool().query("UPDATE factory_releases SET short_publish_state=NULL,short_publish_error=$2,updated_at=NOW() WHERE id=$1",[id,message]);throw error instanceof FactoryError?error:new FactoryError(502,message);}
       await requirePool().query("UPDATE factory_releases SET short_publish_state='uncertain',short_publish_error='Передачу Shorts не підтверджено. Перевір YouTube Studio; автоматичний повтор заблоковано.',updated_at=NOW() WHERE id=$1",[id]);
       return reply.code(502).send({error:'Перевір YouTube Studio: результат передачі Shorts невідомий.'});
     }
+    }finally{if(publishDir)await rm(publishDir,{recursive:true,force:true});endHeavy(heavyToken);}
   });
 }

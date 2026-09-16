@@ -9,6 +9,10 @@ services:
     envVars:
       - key: NODE_VERSION
         value: 24.13.0
+      - key: NODE_OPTIONS
+        value: --max-old-space-size=192
+      - key: MALLOC_ARENA_MAX
+        value: 2
       - key: DATABASE_URL
         sync: false
       - key: WEB_ORIGIN

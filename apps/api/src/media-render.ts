@@ -166,7 +166,7 @@ export async function renderMedia(image: string|string[], audio: string, output:
   };
   const imageInputs=images.flatMap(pictureFile=>['-protocol_whitelist','file,pipe','-f','image2','-loop','1','-framerate','24','-i',pictureFile]);
   await runMediaTool(process.env.FFMPEG_PATH || 'ffmpeg', [
-    '-hide_banner', '-loglevel', 'error', '-nostdin', '-n', '-max_alloc', '67108864', '-filter_complex_threads', '1',
+    '-hide_banner', '-loglevel', 'error', '-nostdin', '-n', '-max_alloc', '67108864', '-filter_threads', '1', '-filter_complex_threads', '1',
     ...imageInputs,
     '-protocol_whitelist', 'file,pipe', '-f', audioKind, ...(format==='shorts'&&clip.start>0?['-ss',clip.start.toFixed(3)]:[]), '-i', audio,
     '-filter_complex', filters.video+';'+filters.audio, '-map', '[vout]', '-map', '[aout]', '-map_metadata', '-1',

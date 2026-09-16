@@ -5,6 +5,7 @@ import { Script } from 'node:vm';
 import Fastify from 'fastify';
 import { buildCinematicFilters, MAX_OUTPUT_BYTES, mediaKind, videoKind, runMediaTool, MediaToolError, shortsClip } from './media-render.js';
 import { mediaScript } from './media-ui.js';
+import { classifyMemory } from './memory-budget.js';
 
 process.env.PUBLIC_API_URL = 'https://api.example.test';
 process.env.YOUTUBE_SETUP_SECRET = 'media-test-secret-'.repeat(3);
@@ -67,6 +68,12 @@ test('cinematic presets build bounded video and audio filter graphs', () => {
 test('Shorts selects a bounded 30-second fragment around the later musical peak',()=>{
   assert.deepEqual(shortsClip(20),{start:0,duration:20});
   assert.deepEqual(shortsClip(240),{start:117,duration:30});
+});
+
+test('memory budget pauses work before the Render hard limit without treating it as a failed render',()=>{
+  assert.equal(classifyMemory(374,512).level,'safe');
+  assert.equal(classifyMemory(384,512).level,'waiting');
+  assert.equal(classifyMemory(420,512).level,'pressure');
 });
 
 test('media files require authentication; invalid origin is rejected', async () => {

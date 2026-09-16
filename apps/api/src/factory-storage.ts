@@ -1,4 +1,7 @@
 import { S3Client, ListObjectsV2Command, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { createReadStream, createWriteStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
+import { pipeline } from 'node:stream/promises';
 
 export const STORAGE_LIMIT = 8_000_000_000;
 export const INPUT_LIMIT = 6_000_000_000; // Keep 2 GB inside our cap available for finished videos.
@@ -6,6 +9,8 @@ export interface ObjectStore {
   usage(): Promise<number>;
   put(key: string, data: Buffer, type: string): Promise<void>;
   get(key: string, max: number): Promise<Buffer>;
+  putFile?(key: string, path: string, type: string): Promise<number>;
+  getFile?(key: string, path: string, max: number): Promise<number>;
   delete(key: string): Promise<void>;
 }
 export function createObjectStore(): ObjectStore | null {
@@ -38,6 +43,19 @@ export function createObjectStore(): ObjectStore | null {
         chunks.push(Buffer.from(chunk));
       }
       return Buffer.concat(chunks);
+    },
+    async putFile(key, path, type) {
+      const size=(await stat(path)).size;
+      await client.send(new PutObjectCommand({ Bucket:bucket,Key:key,Body:createReadStream(path),ContentType:type,ContentLength:size }),{abortSignal:AbortSignal.timeout(5*60*1000)});
+      return size;
+    },
+    async getFile(key, path, max) {
+      const result=await client.send(new GetObjectCommand({Bucket:bucket,Key:key}),{abortSignal:AbortSignal.timeout(60000)});
+      if(!result.Body||result.ContentLength===undefined||result.ContentLength>max)throw new Error('Invalid stored file size');
+      await pipeline(result.Body as NodeJS.ReadableStream,createWriteStream(path,{flags:'wx'}),{signal:AbortSignal.timeout(5*60*1000)});
+      const size=(await stat(path)).size;
+      if(size!==result.ContentLength||size>max)throw new Error('Stored file size changed during download');
+      return size;
     },
     async delete(key) {
       await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }), { abortSignal: AbortSignal.timeout(60000) });

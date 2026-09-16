@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
+import { open, stat } from 'node:fs/promises';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { config } from './config.js';
@@ -13,13 +15,17 @@ const metadataSchema = z.object({
   description: z.string().trim().max(5000).default('Original music release from Veil of Ages.'),
   tags: z.string().trim().max(500).default('').transform(value => value.split(',').map(tag => tag.trim()).filter(Boolean).slice(0,15))
 });
-type Metadata = {
+export type Metadata = {
   title: string;
   children: 'yes'|'no';
   synthetic: 'yes'|'no';
   description?: string;
   tags?: string[];
 };
+
+export class YoutubeUploadOutcomeError extends Error {
+  constructor(message:string,public readonly uncertain:boolean){super(message);this.name='YoutubeUploadOutcomeError';}
+}
 
 export function isMp4(file: Buffer): boolean {
   return file.length >= 12 && file.toString('ascii', 4, 8) === 'ftyp';
@@ -63,15 +69,77 @@ async function finishPrivateVideo(file:Buffer,location:URL,authorization:string)
   throw lastError instanceof Error?lastError:new Error('Upload outcome not confirmed');
 }
 
-export async function sendPrivateVideo(file: Buffer, metadata: Metadata, accessToken: string): Promise<string> {
-  const authorization = `Bearer ${accessToken}`;
-  const session = await fetch('https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status&notifySubscribers=false', {
-    method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15000),
-    headers: { Authorization: authorization, 'Content-Type': 'application/json', 'X-Upload-Content-Type': 'video/mp4', 'X-Upload-Content-Length': String(file.length) },
-    body: JSON.stringify({ snippet: { title: metadata.title, categoryId: '10', description: metadata.description || 'Original music release from Veil of Ages.', tags: metadata.tags ?? [] }, status: { privacyStatus: 'private', selfDeclaredMadeForKids: metadata.children === 'yes', containsSyntheticMedia: metadata.synthetic === 'yes' } })
+async function finishPrivateVideoFile(path:string,total:number,location:URL,authorization:string):Promise<string>{
+  let offset=0,lastError:unknown;
+  for(let attempt=0;attempt<4;attempt++){
+    let response:Response;
+    try{
+      if(offset>=total)response=await queryUpload(location,total,authorization);
+      else{
+        const body=createReadStream(path,{start:offset});
+        const init={method:'PUT',redirect:'error',signal:AbortSignal.timeout(5*60*1000),headers:{Authorization:authorization,'Content-Type':'video/mp4','Content-Length':String(total-offset),'Content-Range':`bytes ${offset}-${total-1}/${total}`},body:body as unknown as BodyInit,duplex:'half'} as unknown as RequestInit&{duplex:'half'};
+        response=await fetch(location,init);
+      }
+    }catch(error){
+      lastError=error;
+      try{response=await queryUpload(location,total,authorization);}catch(statusError){lastError=statusError;continue;}
+    }
+    if(response.ok)return confirmedVideo(response);
+    if(response.status===308){offset=nextUploadByte(response,total);continue;}
+    throw new Error('Upload outcome not confirmed');
+  }
+  throw lastError instanceof Error?lastError:new Error('Upload outcome not confirmed');
+}
+
+async function createUploadSession(total:number,metadata:Metadata,accessToken:string):Promise<{location:URL;authorization:string}>{
+  const authorization=`Bearer ${accessToken}`;
+  const session=await fetch('https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status&notifySubscribers=false',{
+    method:'POST',redirect:'error',signal:AbortSignal.timeout(15000),
+    headers:{Authorization:authorization,'Content-Type':'application/json','X-Upload-Content-Type':'video/mp4','X-Upload-Content-Length':String(total)},
+    body:JSON.stringify({snippet:{title:metadata.title,categoryId:'10',description:metadata.description||'Original music release from Veil of Ages.',tags:metadata.tags??[]},status:{privacyStatus:'private',selfDeclaredMadeForKids:metadata.children==='yes',containsSyntheticMedia:metadata.synthetic==='yes'}})
   });
-  if (!session.ok) throw new Error('YouTube refused upload session');
-  return finishPrivateVideo(file,uploadLocation(session.headers.get('location')),authorization);
+  if(!session.ok)throw new Error('YouTube refused upload session');
+  return {location:uploadLocation(session.headers.get('location')),authorization};
+}
+
+export async function sendPrivateVideo(file: Buffer, metadata: Metadata, accessToken: string): Promise<string> {
+  const session=await createUploadSession(file.length,metadata,accessToken);
+  return finishPrivateVideo(file,session.location,session.authorization);
+}
+
+export async function sendPrivateVideoFile(path:string,metadata:Metadata,accessToken:string):Promise<string>{
+  const size=(await stat(path)).size;
+  const session=await createUploadSession(size,metadata,accessToken);
+  return finishPrivateVideoFile(path,size,session.location,session.authorization);
+}
+
+export async function uploadPrivateVideoFile(path:string,metadata:Metadata):Promise<{videoId:string;duplicate:boolean}>{
+  const size=(await stat(path)).size;
+  if(size<12||size>MAX_VIDEO_BYTES)throw new YoutubeUploadOutcomeError('Готове відео має неправильний розмір.',false);
+  const handle=await open(path,'r');
+  try{const header=Buffer.alloc(12);await handle.read(header,0,12,0);if(!isMp4(header))throw new YoutubeUploadOutcomeError('Готовий файл не є MP4.',false);}
+  finally{await handle.close();}
+  const hash=createHash('sha256');for await(const chunk of createReadStream(path))hash.update(chunk as Buffer);const fileHash=hash.digest('hex');
+  const refresh=await getYoutubeRefreshToken();if(!refresh)throw new YoutubeUploadOutcomeError('Спочатку підключіть YouTube через Google.',false);
+  const token=await googleToken({client_id:process.env.YOUTUBE_CLIENT_ID??'',client_secret:process.env.YOUTUBE_CLIENT_SECRET??'',refresh_token:refresh,grant_type:'refresh_token'});
+  try{await requireVeilOfAgesChannel(token.access_token);}catch(error){throw new YoutubeUploadOutcomeError(error instanceof YoutubeChannelMismatchError?error.message:'Не вдалося перевірити канал YouTube.',false);}
+  const db=requirePool();let claimed=false;
+  try{
+    const inserted=await db.query("INSERT INTO youtube_uploads(file_hash,state) VALUES($1,'uploading') ON CONFLICT DO NOTHING RETURNING file_hash",[fileHash]);
+    if(!inserted.rows.length){
+      const previous=await db.query('SELECT state,video_id FROM youtube_uploads WHERE file_hash=$1',[fileHash]);
+      if(previous.rows[0]?.state==='complete')return {videoId:previous.rows[0].video_id,duplicate:true};
+      throw new YoutubeUploadOutcomeError('Результат попередньої передачі невідомий. Спочатку перевір YouTube Studio.',true);
+    }
+    claimed=true;
+    const videoId=await sendPrivateVideoFile(path,metadata,token.access_token);
+    await db.query("UPDATE youtube_uploads SET state='complete',video_id=$2 WHERE file_hash=$1",[fileHash,videoId]);
+    return {videoId,duplicate:false};
+  }catch(error){
+    if(claimed)await db.query("UPDATE youtube_uploads SET state='uncertain' WHERE file_hash=$1 AND state='uploading'",[fileHash]).catch(()=>{});
+    if(error instanceof YoutubeUploadOutcomeError)throw error;
+    throw new YoutubeUploadOutcomeError(claimed?'Передачу не підтверджено. Перевір YouTube Studio.':'Не вдалося отримати доступ до Google або бази.',claimed);
+  }
 }
 
 type ThumbnailFailure='forbidden'|'invalid'|'not-found'|'rate-limit'|'temporary';

@@ -1,5 +1,10 @@
 import sharp from 'sharp';
 
+// Render has a small shared memory budget. Thumbnails are one-shot work, so a
+// persistent libvips cache only competes with FFmpeg and YouTube uploads.
+sharp.cache({memory:0,files:0,items:0});
+sharp.concurrency(1);
+
 const escapeXml=(value:string)=>value.replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[char]!));
 function lines(title:string){
   const words=title.trim().split(/\s+/),result:string[]=[];let line='';

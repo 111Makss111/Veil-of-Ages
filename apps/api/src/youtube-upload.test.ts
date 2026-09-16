@@ -1,12 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import Fastify from 'fastify';
 
 process.env.PUBLIC_API_URL = 'https://api.example.test';
 process.env.DATABASE_URL = 'postgresql://test:test@localhost/test';
 process.env.YOUTUBE_REFRESH_TOKEN = 'test-refresh';
 process.env.YOUTUBE_SETUP_SECRET = 'test-upload-secret-'.repeat(3);
-const { sendPrivateVideo, setVideoThumbnail, getYoutubeVideoState, isMp4, youtubeUploadRoutes, MAX_VIDEO_BYTES } = await import('./youtube-upload.js');
+const { sendPrivateVideo, sendPrivateVideoFile, setVideoThumbnail, getYoutubeVideoState, isMp4, youtubeUploadRoutes, MAX_VIDEO_BYTES } = await import('./youtube-upload.js');
 const file = Buffer.from('0000ftypisom0000');
 const { pool } = await import('./db.js');
 
@@ -46,6 +49,19 @@ test('resumable upload continues from the byte confirmed by YouTube',async()=>{
     return new Response(JSON.stringify({id:'abcdefghijk',status:{privacyStatus:'private'}}),{status:201});
   };
   try{assert.equal(await sendPrivateVideo(file,{title:'Resume',children:'no',synthetic:'yes'},'secret-token'),'abcdefghijk');assert.equal(calls,3);}finally{globalThis.fetch=original;}
+});
+
+test('factory upload streams a file from disk instead of buffering the MP4',async()=>{
+  const original=globalThis.fetch,dir=await mkdtemp(join(tmpdir(),'veil-youtube-test-')),path=join(dir,'video.mp4');await writeFile(path,file);let calls=0;
+  globalThis.fetch=async(_url,init)=>{
+    calls++;
+    if(calls===1)return new Response(null,{headers:{location:'https://www.googleapis.com/upload/youtube/v3/videos?upload_id=stream'}});
+    const chunks:Buffer[]=[];for await(const chunk of init!.body as unknown as AsyncIterable<Uint8Array>)chunks.push(Buffer.from(chunk));
+    assert.deepEqual(Buffer.concat(chunks),file);assert.equal((init!.headers as Record<string,string>)['Content-Length'],String(file.length));
+    return new Response(JSON.stringify({id:'abcdefghijk',status:{privacyStatus:'private'}}),{status:200});
+  };
+  try{assert.equal(await sendPrivateVideoFile(path,{title:'Stream',children:'no',synthetic:'yes'},'secret-token'),'abcdefghijk');}
+  finally{globalThis.fetch=original;await rm(dir,{recursive:true,force:true});}
 });
 
 test('generated artwork can be set as the private video thumbnail',async()=>{
