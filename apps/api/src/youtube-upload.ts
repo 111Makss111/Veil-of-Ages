@@ -80,7 +80,7 @@ export class YoutubeThumbnailError extends Error {
 }
 
 const thumbnailFailure=(status:number,reason?:string)=>{
-  if(status===403)return new YoutubeThumbnailError('forbidden','YouTube не дозволив власну обкладинку. Підтвердь канал за номером телефону в YouTube Studio → Налаштування → Канал → Доступність функцій, а потім повтори встановлення.');
+  if(status===403)return new YoutubeThumbnailError('forbidden','YouTube не дозволив API встановити обкладинку для цього відео. Якщо власні значки вже ввімкнені, перевір, що до фабрики підключено саме канал Veil of Ages, зачекай 10–30 хвилин після активації функції та повтори лише встановлення обкладинки. Відео вже збережене приватно.');
   if(status===400)return new YoutubeThumbnailError('invalid','YouTube відхилив файл обкладинки. Фабрика збере її заново під час повторної спроби.');
   if(status===404||reason==='videoNotFound')return new YoutubeThumbnailError('not-found','YouTube ще не бачить щойно завантажене відео. Зачекай хвилину й повтори встановлення обкладинки.');
   if(status===429||reason==='uploadRateLimitExceeded')return new YoutubeThumbnailError('rate-limit','YouTube тимчасово обмежив кількість обкладинок. Повтори спробу пізніше.');
@@ -89,7 +89,7 @@ const thumbnailFailure=(status:number,reason?:string)=>{
 
 export async function setVideoThumbnail(file: Buffer, type: 'image/jpeg'|'image/png', videoId: string, accessToken: string, wait:(ms:number)=>Promise<unknown>=(ms)=>new Promise(resolve=>setTimeout(resolve,ms))): Promise<void> {
   if (file.length < 16 || file.length > MAX_THUMBNAIL_BYTES) throw new YoutubeThumbnailError('invalid','Обкладинка має бути до 2 МіБ.');
-  const url=new URL('https://www.googleapis.com/upload/youtube/v3/thumbnails/set');url.searchParams.set('videoId',videoId);
+  const url=new URL('https://www.googleapis.com/upload/youtube/v3/thumbnails/set');url.searchParams.set('videoId',videoId);url.searchParams.set('uploadType','media');
   let lastError:YoutubeThumbnailError|undefined;
   for(let attempt=0;attempt<3;attempt++){
     try{
@@ -105,6 +105,24 @@ export async function setVideoThumbnail(file: Buffer, type: 'image/jpeg'|'image/
     if(attempt<2)await wait((attempt+1)*1500);
   }
   throw lastError??thumbnailFailure(503);
+}
+
+export type YoutubeVideoState='processed'|'processing'|'failed'|'missing';
+export async function getYoutubeVideoState(videoId:string,accessToken:string):Promise<{state:YoutubeVideoState;detail:string}>{
+  const url=new URL('https://www.googleapis.com/youtube/v3/videos');
+  url.search=new URLSearchParams({part:'status,processingDetails',id:videoId}).toString();
+  const response=await fetch(url,{redirect:'error',signal:AbortSignal.timeout(15000),headers:{Authorization:`Bearer ${accessToken}`}});
+  if(!response.ok)throw new Error('YouTube video status unavailable');
+  const data=z.object({items:z.array(z.object({
+    status:z.object({uploadStatus:z.string().optional(),failureReason:z.string().optional(),rejectionReason:z.string().optional()}).optional(),
+    processingDetails:z.object({processingStatus:z.string().optional(),processingFailureReason:z.string().optional()}).optional()
+  }).passthrough())}).parse(await response.json());
+  const video=data.items[0];
+  if(!video)return {state:'missing',detail:'YouTube не знайшов ролик за збереженим ID.'};
+  const upload=video.status?.uploadStatus,processing=video.processingDetails?.processingStatus;
+  if(upload==='failed'||upload==='rejected'||upload==='deleted'||processing==='failed'||processing==='terminated')return {state:'failed',detail:'YouTube отримав файл, але не завершив його обробку.'};
+  if(upload==='processed'||processing==='succeeded')return {state:'processed',detail:'YouTube підтвердив ролик і завершив його обробку.'};
+  return {state:'processing',detail:'Ролик є на YouTube, але його обробка ще триває.'};
 }
 
 const html = `<!doctype html><html lang="uk"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Завантаження YouTube · Veil of Ages</title><link rel="stylesheet" href="/youtube/upload.css"><script src="/youtube/upload.js" defer></script></head><body><main><p>VEIL OF AGES</p><h1>Тестове відео на YouTube</h1><p>Файл буде завантажено в канал підключеного Google-акаунта лише як <strong>приватне відео</strong>, без сповіщення підписників. Перевірте обраний канал під час авторизації.</p><form id="upload"><label>Секрет налаштування Render (YOUTUBE_SETUP_SECRET)<input id="secret" type="password" required autocomplete="off"></label><label>Назва ролика<input id="title" maxlength="100" value="Veil of Ages — тестове відео" required></label><label>Відео MP4 (до 25 МіБ)<input id="file" type="file" accept="video/mp4,.mp4" required></label><label>Це відео створене спеціально для дітей?<select id="children" required><option value="">Оберіть</option><option value="no">Ні</option><option value="yes">Так</option></select></label><label>Містить музику або інший реалістичний контент, згенерований ШІ?<select id="synthetic" required><option value="">Оберіть</option><option value="yes">Так</option><option value="no">Ні</option></select></label><label><input type="checkbox" required> Підтверджую, що маю право завантажити це аудіо та зображення.</label><button id="submit">Завантажити приватно на YouTube</button></form><p id="status" role="status" aria-live="polite"></p><a id="result" hidden target="_blank" rel="noopener noreferrer">Відкрити відео на YouTube</a><p>Не закривайте сторінку під час передачі. Якщо зв'язок обірветься, спочатку перевірте YouTube Studio. Повторна відправка того самого файлу не створює нову копію.</p><a href="/auth/youtube">Повторно підключити Google</a></main></body></html>`;
@@ -138,6 +156,15 @@ export async function youtubeUploadRoutes(app: FastifyInstance) {
     if(!valid)return reply.code(400).send({error:'Формат мініатюри не підтверджено.'});
     try{const refresh=await getYoutubeRefreshToken();if(!refresh)return reply.code(409).send({error:'Спочатку підключіть YouTube через Google.'});const token=await googleToken({client_id:process.env.YOUTUBE_CLIENT_ID??'',client_secret:process.env.YOUTUBE_CLIENT_SECRET??'',refresh_token:refresh,grant_type:'refresh_token'});await setVideoThumbnail(file,type,query.data.videoId,token.access_token);return {ok:true};}
     catch(error){return reply.code(error instanceof YoutubeThumbnailError&&error.reason!=='temporary'?409:502).send({error:error instanceof YoutubeThumbnailError?error.message:'Відео завантажено, але YouTube не підтвердив власну обкладинку.'});}
+  });
+  app.post('/youtube/video-status',{logLevel:'silent',onRequest:async(request,reply)=>{
+    if(!request.ownerSession?.verified)return reply.code(401).send({error:'Потрібно увійти у кабінет.'});
+    if(request.headers.origin!==origin)return reply.code(403).send({error:'Відкрийте фабрику на адресі Render заново.'});
+  }},async(request,reply)=>{
+    const query=z.object({videoId:z.string().regex(/^[A-Za-z0-9_-]{11}$/)}).safeParse(request.query);
+    if(!query.success)return reply.code(400).send({error:'Некоректний ID ролика.'});
+    try{const refresh=await getYoutubeRefreshToken();if(!refresh)return reply.code(409).send({error:'Спочатку підключіть YouTube через Google.'});const token=await googleToken({client_id:process.env.YOUTUBE_CLIENT_ID??'',client_secret:process.env.YOUTUBE_CLIENT_SECRET??'',refresh_token:refresh,grant_type:'refresh_token'});return await getYoutubeVideoState(query.data.videoId,token.access_token);}
+    catch{return reply.code(502).send({error:'Не вдалося перевірити ролик через YouTube API. Онови підключення Google і спробуй ще раз.'});}
   });
   app.post('/youtube/upload', {
     bodyLimit: MAX_VIDEO_BYTES, logLevel: 'silent',

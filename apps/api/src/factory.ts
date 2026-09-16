@@ -442,6 +442,21 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
       return {reconciled:false,retryAllowed:true};
     });
   });
+  app.post('/api/factory/releases/:id/verify-youtube',async(req,reply)=>{
+    const id=uuid.parse((req.params as {id:string}).id),body=z.object({target:z.enum(['video','shorts'])}).strict().parse(req.body);
+    const release=(await requirePool().query('SELECT state,video_id,short_publish_state,short_video_id FROM factory_releases WHERE id=$1',[id])).rows[0];
+    if(!release)throw new FactoryError(404,'Випуск не знайдено.');
+    const videoId=body.target==='video'?release.video_id:release.short_video_id;
+    if(!/^[A-Za-z0-9_-]{11}$/.test(videoId||''))throw new FactoryError(409,'Для цієї передачі ще немає підтвердженого ID YouTube.');
+    const result=await app.inject({method:'POST',url:'/youtube/video-status?'+new URLSearchParams({videoId}),headers:{cookie:req.headers.cookie??'',origin:ownerOrigin()}});
+    const data=result.json();
+    if(result.statusCode!==200)return reply.code(result.statusCode===409?409:502).send({error:data.error||'Не вдалося перевірити ролик у YouTube.'});
+    if(data.state==='missing'||data.state==='failed'){
+      if(body.target==='video')await requirePool().query("UPDATE factory_releases SET state='uncertain',error=$2,updated_at=NOW() WHERE id=$1",[id,data.detail+' Перевір YouTube Studio; якщо ролика там немає, дозволь нову передачу.']);
+      else await requirePool().query("UPDATE factory_releases SET short_publish_state='uncertain',short_publish_error=$2,updated_at=NOW() WHERE id=$1",[id,data.detail+' Перевір YouTube Studio; якщо Shorts там немає, дозволь нову передачу.']);
+    }
+    return data;
+  });
   app.post('/api/factory/releases/:id/publish',{logLevel:'silent'},async(req,reply)=>{
     const id=uuid.parse((req.params as {id:string}).id);
     const meta=z.object({children:z.enum(['yes','no']),synthetic:z.enum(['yes','no']),rights:z.literal(true)}).strict().parse(req.body);
