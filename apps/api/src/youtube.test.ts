@@ -47,11 +47,11 @@ test('Google error bodies containing secrets are not propagated', async () => {
 
 test('YouTube channel guard accepts Veil of Ages and rejects another connected channel',async()=>{
   const original=globalThis.fetch;
-  let title='Veil of Ages';
-  globalThis.fetch=async()=>new Response(JSON.stringify({items:[{id:'UCveilofages',snippet:{title}}]}));
+  let id='UCf6q4aVKDAs6lxDzp-dzJEg',title='Veil of Ages';
+  globalThis.fetch=async()=>new Response(JSON.stringify({items:[{id,snippet:{title}}]}));
   try{
-    assert.equal((await requireVeilOfAgesChannel('access')).id,'UCveilofages');
-    title='Personal channel';
+    assert.equal((await requireVeilOfAgesChannel('access')).id,'UCf6q4aVKDAs6lxDzp-dzJEg');
+    id='UCpersonal';title='Personal channel';
     await assert.rejects(requireVeilOfAgesChannel('access'),error=>error instanceof YoutubeChannelMismatchError&&/Personal channel/.test(error.message));
   }finally{globalThis.fetch=original;}
 });

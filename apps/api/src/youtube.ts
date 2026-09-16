@@ -8,6 +8,7 @@ export const YOUTUBE_SCOPES = [
   'https://www.googleapis.com/auth/youtube.upload',
   'https://www.googleapis.com/auth/youtube.readonly'
 ] as const;
+export const DEFAULT_YOUTUBE_CHANNEL_ID='UCf6q4aVKDAs6lxDzp-dzJEg';
 const scope = YOUTUBE_SCOPES.join(' ');
 const hasRequiredScopes=(value:string|undefined)=>!value||YOUTUBE_SCOPES.every(required=>value.split(' ').includes(required));
 const hash = (value: string) => createHash('sha256').update(value).digest('base64url');
@@ -16,7 +17,7 @@ const escapeHtml=(value:string)=>value.replace(/[&<>"']/g,char=>({"&":"&amp;","<
 
 export type YoutubeChannelIdentity={id:string;title:string};
 export class YoutubeChannelMismatchError extends Error {
-  constructor(public readonly channel:YoutubeChannelIdentity){super(`Підключено канал «${channel.title}», а фабрика дозволяє публікацію лише у Veil of Ages. Онови підключення Google і вибери правильний YouTube-канал.`);this.name='YoutubeChannelMismatchError';}
+  constructor(public readonly channel:YoutubeChannelIdentity){super(`Google підключив канал «${channel.title}» (${channel.id}), але потрібен Veil of Ages (${process.env.YOUTUBE_CHANNEL_ID?.trim()||DEFAULT_YOUTUBE_CHANNEL_ID}). У вікні Google вибери саме YouTube-канал Veil of Ages, а не особистий профіль.`);this.name='YoutubeChannelMismatchError';}
 }
 
 export async function getYoutubeChannelIdentity(accessToken:string):Promise<YoutubeChannelIdentity>{
@@ -29,9 +30,8 @@ export async function getYoutubeChannelIdentity(accessToken:string):Promise<Yout
 }
 
 export async function requireVeilOfAgesChannel(accessToken:string):Promise<YoutubeChannelIdentity>{
-  const channel=await getYoutubeChannelIdentity(accessToken),expectedId=process.env.YOUTUBE_CHANNEL_ID?.trim();
-  const matches=expectedId?channel.id===expectedId:channel.title.trim().toLocaleLowerCase('en-US')==='veil of ages';
-  if(!matches)throw new YoutubeChannelMismatchError(channel);
+  const channel=await getYoutubeChannelIdentity(accessToken),expectedId=process.env.YOUTUBE_CHANNEL_ID?.trim()||DEFAULT_YOUTUBE_CHANNEL_ID;
+  if(channel.id!==expectedId)throw new YoutubeChannelMismatchError(channel);
   return channel;
 }
 

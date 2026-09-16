@@ -118,7 +118,7 @@ test('duplicate file returns saved video without a second upload', async () => {
   }) as typeof originalQuery;
   globalThis.fetch = async (url, init) => {
     if (String(url).includes('oauth2.googleapis.com')) return new Response(JSON.stringify({ access_token: 'test-access' }));
-    if (String(url).includes('/youtube/v3/channels')) return new Response(JSON.stringify({items:[{id:'UCveilofages',snippet:{title:'Veil of Ages'}}]}));
+    if (String(url).includes('/youtube/v3/channels')) return new Response(JSON.stringify({items:[{id:'UCf6q4aVKDAs6lxDzp-dzJEg',snippet:{title:'Veil of Ages'}}]}));
     if (init!.method === 'POST') return new Response(null, { headers: { location: 'https://www.googleapis.com/upload/youtube/v3/videos?upload_id=test' } });
     uploads++;
     return new Response(JSON.stringify({ id: 'abcdefghijk', status: { privacyStatus: 'private' } }), { status: 201 });
