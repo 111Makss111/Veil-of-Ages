@@ -38,6 +38,11 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     const token=Symbol(label);heavyOperation={token,label};return token;
   };
   const endHeavy=(token:symbol)=>{if(heavyOperation?.token===token)heavyOperation=null;};
+  const beginHeavyAfterCleanup=async(label:string)=>{
+    const deadline=Date.now()+15000;
+    while(heavyOperation&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,50));
+    return beginHeavy(label);
+  };
   const storageToFile=async(s:ObjectStore,key:string,path:string,max:number)=>s.getFile?s.getFile(key,path,max):s.get(key,max).then(data=>writeFile(path,data).then(()=>data.length));
   const fileToStorage=async(s:ObjectStore,key:string,path:string,type:string)=>s.putFile?s.putFile(key,path,type):(async()=>{const data=await readFile(path);await s.put(key,data,type);return data.length;})();
   const needStorage=()=>{if(!storage)throw new FactoryError(503,'Підключи приватне сховище R2 в Render. Файли ще не завантажуються.');return storage;};
@@ -301,7 +306,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
   }
   app.post('/api/factory/releases/:id/shorts',async(req,reply)=>{
     needStorage();if(!options.render)await checkMediaTools();const id=uuid.parse((req.params as {id:string}).id),{regenerate}=z.object({regenerate:z.boolean().optional().default(false)}).strict().parse(req.body??{});
-    let heavyToken:symbol|null=beginHeavy('монтаж Shorts');
+    let heavyToken:symbol|null=await beginHeavyAfterCleanup('монтаж Shorts');
     try{const {release,fresh}=await factoryLock(async db=>{
       if((await db.query("SELECT id FROM factory_releases WHERE state='rendering' OR short_state='rendering'")).rowCount)throw new FactoryError(409,'Лінія вже монтує відео. Дочекайся завершення.');
       const current=(await db.query('SELECT * FROM factory_releases WHERE id=$1 FOR UPDATE',[id])).rows[0];
@@ -412,13 +417,13 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     const {requestKey,channelId,ideaId}=z.object({requestKey:uuid,channelId:containerId.default('veil-of-ages'),ideaId:uuid.optional()}).strict().parse(req.body);
     const existing=(await requirePool().query('SELECT id,state FROM factory_releases WHERE request_key=$1',[requestKey])).rows[0];
     if(existing)return reply.code(200).send({id:existing.id,state:existing.state});
-    const s=needStorage();if(!options.render)await checkMediaTools();let heavyToken:symbol|null=beginHeavy('монтаж повного відео');
+    const s=needStorage();if(!options.render)await checkMediaTools();let heavyToken:symbol|null=await beginHeavyAfterCleanup('монтаж повного відео');
     try{const {release,fresh}=await startRelease(s,requestKey,!!imageGenerator,channelId,ideaId);if(fresh){work(release,heavyToken);heavyToken=null;}
     return reply.code(fresh?202:200).send({id:release.id,state:release.state});}
     finally{if(heavyToken)endHeavy(heavyToken);}
   });
   app.post('/api/factory/releases/:id/retry',async(req,reply)=>{
-    needStorage();const id=uuid.parse((req.params as {id:string}).id);let heavyToken:symbol|null=beginHeavy('повтор монтажу');
+    needStorage();const id=uuid.parse((req.params as {id:string}).id);let heavyToken:symbol|null=await beginHeavyAfterCleanup('повтор монтажу');
     try{const release=await factoryLock(async db=>{
       if((await db.query("SELECT id FROM factory_releases WHERE state='rendering' OR short_state='rendering'")).rowCount)throw new FactoryError(409,'Лінія зайнята.');
       const r=(await db.query("UPDATE factory_releases SET state='rendering',stage='preparing',progress=2,progress_detail='Готуємо полегшений повтор з одним образом і тими самими матеріалами.',recipe=jsonb_set(recipe,'{productionPlan,sceneCount}','1'::jsonb,true),error=NULL,started_at=NOW(),render_started_at=NULL,processed_seconds=NULL,render_duration=NULL,updated_at=NOW() WHERE id=$1 AND state='failed' RETURNING *",[id])).rows[0];
@@ -489,7 +494,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
   app.post('/api/factory/releases/:id/publish',{logLevel:'silent'},async(req,reply)=>{
     const id=uuid.parse((req.params as {id:string}).id);
     const meta=z.object({children:z.enum(['yes','no']),synthetic:z.enum(['yes','no']),rights:z.literal(true)}).strict().parse(req.body);
-    const heavyToken=beginHeavy('передача повного відео на YouTube');
+    const heavyToken=await beginHeavyAfterCleanup('передача повного відео на YouTube');
     let publishDir:string|undefined;
     try{
     await waitForMemory(undefined,budget=>app.log.warn({operation:'youtube-video',memoryPercent:Math.round(budget.ratio*100)},'YouTube upload waits at a safe memory checkpoint'));
@@ -515,7 +520,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
   app.post('/api/factory/releases/:id/publish-short',{logLevel:'silent'},async(req,reply)=>{
     const id=uuid.parse((req.params as {id:string}).id);
     const meta=z.object({children:z.enum(['yes','no']),synthetic:z.enum(['yes','no']),rights:z.literal(true)}).strict().parse(req.body);
-    const heavyToken=beginHeavy('передача Shorts на YouTube');
+    const heavyToken=await beginHeavyAfterCleanup('передача Shorts на YouTube');
     let publishDir:string|undefined;
     try{
     await waitForMemory(undefined,budget=>app.log.warn({operation:'youtube-shorts',memoryPercent:Math.round(budget.ratio*100)},'YouTube upload waits at a safe memory checkpoint'));
