@@ -1,7 +1,7 @@
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createOpenAIImageGenerator } from './factory-ai.js';
-import { buildOpenAISongRequest, buildSongPrompt, isConciseSongTitle } from './factory-song.js';
+import { applySunoDuetVariation, buildOpenAISongRequest, buildSongPrompt, chooseSubtleSongVariation, isConciseSongTitle } from './factory-song.js';
 import { DEFAULT_OPENAI_IMAGE_MODEL, DEFAULT_OPENAI_TEXT_MODEL, openAIConfig, openAIRequest } from './openai-provider.js';
 
 const originalFetch=globalThis.fetch,originalKey=process.env.OPENAI_API_KEY,originalTextModel=process.env.OPENAI_TEXT_MODEL,originalImageModel=process.env.OPENAI_IMAGE_MODEL;
@@ -34,13 +34,27 @@ test('song generator asks Luna for a strict structured package',()=>{
 
 test('song generator uses the original proven Viking sound directions',()=>{
   const anthem=buildSongPrompt('viking-anthem','A winter homecoming',[]);
-  assert.match(anthem,/Epic Viking song for active listening/);
-  assert.match(anthem,/powerful controlled group chorus/);
-  assert.match(anthem,/memorable melodic hook/);
+  assert.match(anthem,/Epic Viking male-female duet for active listening/);
+  assert.match(anthem,/low expressive male lead and strong clear female lead/);
+  assert.match(anthem,/Final Chorus — Duet/);
+  assert.match(anthem,/woman must not be reduced to backing vocals/);
   const duet=buildSongPrompt('viking-rap-duet','A winter homecoming',[]);
-  assert.match(duet,/Nordic cinematic hip-hop/);
-  assert.match(duet,/strong melodic female answer or duet/);
+  assert.match(duet,/Nordic cinematic hip-hop duet/);
+  assert.match(duet,/strong melodic female lead trade lines throughout/);
   assert.match(duet,/heavy measured drums/);
+});
+
+test('song generator adds one small rotating accent without replacing the base sound',()=>{
+  const first=chooseSubtleSongVariation([],'release-a');
+  const second=chooseSubtleSongVariation([{title:'Old song',concept:'Old concept',sunoPrompt:`Viking duet with ${first.marker}`}],'release-a');
+  assert.notEqual(second.id,first.id);
+  const prompt=buildSongPrompt('viking-anthem','A winter homecoming',[],first);
+  assert.match(prompt,/Add only this one secondary arrangement detail/);
+  assert.match(prompt,new RegExp(first.marker));
+  const finalPrompt=applySunoDuetVariation('Epic Viking music with deep drums and bowed strings.',first);
+  assert.match(finalPrompt,/true male-female duet/);
+  assert.match(finalPrompt,new RegExp(first.marker));
+  assert.ok(finalPrompt.length<=1000);
 });
 
 test('song generator requires a concise title instead of a plot summary',()=>{
