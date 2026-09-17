@@ -23,11 +23,19 @@ export async function buildShortsArtwork(image:Buffer,title:string){
   return sharp(image).resize(720,1280,{fit:'cover',position:'attention'}).composite([{input:overlay}]).jpeg({quality:90,mozjpeg:true}).toBuffer();
 }
 
-export async function buildShortsStoryArtwork(image:Buffer,title:string,position:number,hook:string){
-  if(position===1)return sharp(image).resize(720,1280,{fit:'cover',position:'attention'}).jpeg({quality:90,mozjpeg:true}).toBuffer();
+export async function buildShortsStoryArtwork(image:Buffer,title:string,position:number,hook:string,kineticText=false){
+  if(position===1&&!kineticText)return sharp(image).resize(720,1280,{fit:'cover',position:'attention'}).jpeg({quality:90,mozjpeg:true}).toBuffer();
   const final=position>=2,text=final?lines(title):lines(hook),font=final?58:46,y=final?870:850;
   const spans=text.map((line,index)=>`<tspan x="360" dy="${index?(final?70:58):0}">${escapeXml(line)}</tspan>`).join('');
   const footer=final?`<rect x="280" y="1090" width="160" height="5" rx="3" fill="#c6ed9f"/><text x="360" y="1150" text-anchor="middle" fill="#e7f0df" font-family="Arial, sans-serif" font-size="25" font-weight="700">FULL SONG ON VEIL OF AGES</text>`:'';
-  const overlay=Buffer.from(`<svg width="720" height="1280" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="top" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#06100b" stop-opacity=".82"/><stop offset="1" stop-color="#06100b" stop-opacity="0"/></linearGradient><linearGradient id="bottom" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#06100b" stop-opacity="0"/><stop offset="1" stop-color="#06100b" stop-opacity=".94"/></linearGradient></defs><rect width="720" height="260" fill="url(#top)"/><rect y="680" width="720" height="600" fill="url(#bottom)"/><text x="360" y="76" text-anchor="middle" fill="#c6ed9f" font-family="Arial, sans-serif" font-size="22" font-weight="700" letter-spacing="6">VEIL OF AGES</text><text x="360" y="${y}" text-anchor="middle" fill="#fff" stroke="#07120d" stroke-width="4" paint-order="stroke" font-family="Arial, sans-serif" font-size="${font}" font-weight="800">${spans}</text>${footer}</svg>`);
+  const copy=kineticText?'':`<text x="360" y="${y}" text-anchor="middle" fill="#fff" stroke="#07120d" stroke-width="4" paint-order="stroke" font-family="Arial, sans-serif" font-size="${font}" font-weight="800">${spans}</text>`;
+  const overlay=Buffer.from(`<svg width="720" height="1280" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="top" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#06100b" stop-opacity=".82"/><stop offset="1" stop-color="#06100b" stop-opacity="0"/></linearGradient><linearGradient id="bottom" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#06100b" stop-opacity="0"/><stop offset="1" stop-color="#06100b" stop-opacity=".94"/></linearGradient></defs><rect width="720" height="260" fill="url(#top)"/>${final?'<rect y="910" width="720" height="370" fill="url(#bottom)"/>':''}<text x="360" y="76" text-anchor="middle" fill="#c6ed9f" font-family="Arial, sans-serif" font-size="22" font-weight="700" letter-spacing="6">VEIL OF AGES</text>${copy}${footer}</svg>`);
   return sharp(image).resize(720,1280,{fit:'cover',position:'attention'}).composite([{input:overlay}]).jpeg({quality:90,mozjpeg:true}).toBuffer();
+}
+
+export async function buildKineticLyricOverlay(text:string,accent:string,index=0){
+  const phrase=lines(text).slice(0,2),spans=phrase.map((line,lineIndex)=>`<tspan x="340" dy="${lineIndex?47:0}">${escapeXml(line)}</tspan>`).join('');
+  const color=index%3===1?'#e0c47d':'#c6ed9f',safeAccent=escapeXml(accent.slice(0,28));
+  const overlay=Buffer.from(`<svg width="680" height="300" xmlns="http://www.w3.org/2000/svg"><rect x="18" y="18" width="644" height="264" rx="28" fill="#06100b" fill-opacity=".72" stroke="#d8efc2" stroke-opacity=".2"/><text x="340" y="112" text-anchor="middle" fill="${color}" stroke="#06100b" stroke-width="3" paint-order="stroke" font-family="Arial, sans-serif" font-size="68" font-weight="900" letter-spacing="2">${safeAccent}</text><text x="340" y="187" text-anchor="middle" fill="#fff" stroke="#06100b" stroke-width="3" paint-order="stroke" font-family="Arial, sans-serif" font-size="36" font-weight="800">${spans}</text></svg>`);
+  return sharp(overlay).png({compressionLevel:9,palette:true}).toBuffer();
 }

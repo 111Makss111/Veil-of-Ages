@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { requirePool } from './db.js';
 import { ownerOrigin } from './owner-auth.js';
-import { mediaKind, videoKind, renderMedia, runMediaTool, checkMediaTools, MAX_OUTPUT_BYTES, MediaToolError } from './media-render.js';
+import { mediaKind, videoKind, renderMedia, runMediaTool, checkMediaTools, shortsClip, MAX_OUTPUT_BYTES, MediaToolError, type ShortsLyricOverlay } from './media-render.js';
 import { createObjectStore, STORAGE_LIMIT, INPUT_LIMIT, type ObjectStore } from './factory-storage.js';
 import { FactoryError, reserveAsset, startRelease, factoryLock, capacity } from './factory-store.js';
 import { factoryPage, factoryCss, factoryScript } from './factory-ui.js';
@@ -18,7 +18,8 @@ import { buildShortsStoryPlan, createPreferredImageGenerator, imageGeneratorProv
 import { ACTIVE_EFFECT_IDS, EFFECT_CATALOG, motionIntensitySchema } from './factory-effects.js';
 import { approveSongIdea, createSongIdea, textGeneratorConfigured, textGeneratorProvider } from './factory-song.js';
 import { songMode, songPackageSchema } from './factory-song-domain.js';
-import { buildShortsArtwork, buildShortsStoryArtwork, buildYoutubeThumbnail } from './factory-thumbnail.js';
+import { buildKineticLyricOverlay, buildShortsArtwork, buildShortsStoryArtwork, buildYoutubeThumbnail } from './factory-thumbnail.js';
+import { buildStoryCaptionCues, shortsTranscriptionConfigured, transcribeShortsLyrics, type ShortsLyricCue } from './shorts-lyrics.js';
 import { waitForMemory } from './memory-budget.js';
 import { uploadPrivateVideoFile, YoutubeUploadOutcomeError, type Metadata as YoutubeMetadata } from './youtube-upload.js';
 
@@ -27,10 +28,11 @@ const vocal=z.enum(['instrumental','choir']);
 const containerId=z.string().regex(/^[a-z0-9-]{2,40}$/);
 const UPLOAD_MAX=25*1024*1024;
 const SHORTS_MAX_BYTES=16*1024*1024;
-export async function factoryRoutes(app: FastifyInstance, options: { storage?: ObjectStore; render?: typeof renderMedia; probe?: (file: string, kind: string) => Promise<number>; imageGenerator?: ImageGenerator|null; publisher?:(path:string,metadata:YoutubeMetadata)=>Promise<{videoId:string;duplicate:boolean}> } = {}) {
+export async function factoryRoutes(app: FastifyInstance, options: { storage?: ObjectStore; render?: typeof renderMedia; probe?: (file: string, kind: string) => Promise<number>; imageGenerator?: ImageGenerator|null; lyricTranscriber?:((file:string,knownLyrics:string,signal?:AbortSignal)=>Promise<ShortsLyricCue[]|null>)|null; publisher?:(path:string,metadata:YoutubeMetadata)=>Promise<{videoId:string;duplicate:boolean}> } = {}) {
   const storage=options.storage ?? createObjectStore();
   const imageGenerator=options.imageGenerator===undefined?createPreferredImageGenerator():options.imageGenerator;
   const configuredImageProvider=options.imageGenerator===undefined?imageGeneratorProvider():options.imageGenerator?'Генератор образів':null;
+  const lyricTranscriber=options.lyricTranscriber===undefined?(shortsTranscriptionConfigured()?transcribeShortsLyrics:null):options.lyricTranscriber;
   const publishVideo=options.publisher??uploadPrivateVideoFile;
   const tasks=new Set<Promise<void>>();const jobs=new Map<string,AbortController>();let uploading=false;
   let heavyOperation:{token:symbol;label:string}|null=null;
@@ -102,7 +104,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
       db.query('SELECT * FROM factory_notes ORDER BY completed ASC, updated_at DESC, created_at DESC LIMIT 200')
     ]);
     const availableByChannel:Record<string,Record<string,number>>={};for(const r of counts.rows)(availableByChannel[r.channel_id]??={})[r.vocal]=Number(r.available);
-    return {configured:!!storage,aiConfigured:!!imageGenerator,imageAiProvider:configuredImageProvider,textAiConfigured:textGeneratorConfigured(),textAiProvider:textGeneratorProvider(),recipe:recipe.rows[0],effects:EFFECT_CATALOG,assets:assets.rows,releases:releases.rows,ideas:ideas.rows,notes:notes.rows,channels:channels.rows,containers:containers.rows,channelContainers:channelContainers.rows,availableByChannel,availableByVocal:Object.fromEntries(counts.rows.filter(r=>r.channel_id==='veil-of-ages').map(r=>[r.vocal,Number(r.available)])),limit:STORAGE_LIMIT,inputLimit:INPUT_LIMIT};
+    return {configured:!!storage,aiConfigured:!!imageGenerator,imageAiProvider:configuredImageProvider,textAiConfigured:textGeneratorConfigured(),textAiProvider:textGeneratorProvider(),shortsLyricsConfigured:!!lyricTranscriber,recipe:recipe.rows[0],effects:EFFECT_CATALOG,assets:assets.rows,releases:releases.rows,ideas:ideas.rows,notes:notes.rows,channels:channels.rows,containers:containers.rows,channelContainers:channelContainers.rows,availableByChannel,availableByVocal:Object.fromEntries(counts.rows.filter(r=>r.channel_id==='veil-of-ages').map(r=>[r.vocal,Number(r.available)])),limit:STORAGE_LIMIT,inputLimit:INPUT_LIMIT};
   });
   app.post('/api/factory/notes',async(req,reply)=>{
     const body=z.object({text:z.string().trim().min(1).max(1000)}).strict().parse(req.body);
@@ -309,9 +311,28 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
         if(!track||!cover||!output)throw Error('Missing Shorts material');
         const audio=join(dir,'audio'),video=join(dir,'shorts.mp4');
         await storageToFile(s,track.object_key,audio,UPLOAD_MAX);
+        let lyricMode:'transcribed'|'story-captions'=release.short_plan?.kineticText?.mode==='transcribed'?'transcribed':'story-captions';
+        const savedLyricCues:ShortsLyricCue[]=Array.isArray(release.short_plan?.kineticText?.cues)?release.short_plan.kineticText.cues:[];
+        let lyricCues:ShortsLyricCue[]=lyricMode==='transcribed'?savedLyricCues:[];
+        if(!lyricCues.length&&lyricTranscriber){
+          try{
+            progress(3);const vocalClip=join(dir,'shorts-vocal.mp3'),clip=shortsClip(Number(track.duration)||30),audioKind=track.type==='audio/wav'?'wav':'mp3';
+            await runMediaTool(process.env.FFMPEG_PATH||'ffmpeg',['-hide_banner','-loglevel','error','-nostdin','-y','-max_alloc','67108864','-f',audioKind,...(clip.start>0?['-ss',clip.start.toFixed(3)]:[]),'-i',audio,'-t',clip.duration.toFixed(3),'-vn','-ac','1','-ar','16000','-b:a','64k',vocalClip],120000,controller.signal);
+            let knownLyrics='';const ideaId=String(release.recipe?.ideaId||'');
+            if(ideaId){const idea=(await requirePool().query('SELECT content FROM factory_song_ideas WHERE id=$1',[ideaId])).rows[0];knownLyrics=String(idea?.content?.lyrics||'');}
+            lyricCues=await lyricTranscriber(vocalClip,knownLyrics,controller.signal)||[];if(lyricCues.length)lyricMode='transcribed';
+          }catch{app.log.warn({releaseId:release.id},'Factory uses story captions because vocal timing is unavailable');}
+        }
+        if(!lyricCues.length)lyricCues=buildStoryCaptionCues(String(release.short_plan?.hook||release.title));
+        const lyricOverlays:ShortsLyricOverlay[]=[];
+        for(const [index,cue] of lyricCues.entries()){
+          const path=join(dir,`lyric-${index}.png`),overlay=await buildKineticLyricOverlay(cue.text,cue.accent,index);await writeFile(path,overlay);lyricOverlays.push({path,start:cue.start,end:cue.end});
+        }
+        if(release.short_plan){release.short_plan={...release.short_plan,kineticText:{mode:lyricMode,cues:lyricCues}};await requirePool().query('UPDATE factory_releases SET short_plan=$2,short_updated_at=NOW() WHERE id=$1',[release.id,JSON.stringify(release.short_plan)]);}
         let scenes=(await requirePool().query(`SELECT s.position,s.label,s.timing,s.motion,s.prompt,s.seed,a.id AS asset_id,a.object_key,a.state,a.type
           FROM factory_short_scenes s JOIN factory_assets a ON a.id=s.asset_id WHERE s.release_id=$1 ORDER BY s.position`,[release.id])).rows;
         if(!scenes.length){const fallback=release.short_cover_id?(await requirePool().query("SELECT * FROM factory_assets WHERE id=$1 AND kind='image'",[release.short_cover_id])).rows[0]:cover;scenes=[{position:0,label:'Єдиний образ',timing:'0–30 с',motion:'Повільне наближення',prompt:release.short_cover_prompt,seed:release.short_cover_seed,asset_id:fallback.id,object_key:fallback.object_key,state:fallback.state,type:fallback.type}];}
+        const activeLyricOverlays=scenes.length>1?lyricOverlays:[];
         const images=scenes.map((_scene,index)=>join(dir!,`shorts-${index}.jpg`)),hook=String(release.short_plan?.hook||'');
         for(const [index,scene] of scenes.entries()){
           let artworkData:Buffer;
@@ -323,14 +344,14 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
             await s.put(scene.object_key,generated.data,generated.type);artworkData=generated.data;
             await requirePool().query("UPDATE factory_assets SET state='ready',bytes=$2,type=$3 WHERE id=$1",[scene.asset_id,generated.data.length,generated.type]);
           }
-          const frame=scenes.length>1?await buildShortsStoryArtwork(artworkData,release.title,index,hook):await buildShortsArtwork(artworkData,release.title);
+          const frame=scenes.length>1?await buildShortsStoryArtwork(artworkData,release.title,index,hook,activeLyricOverlays.length>0):await buildShortsArtwork(artworkData,release.title);
           await writeFile(images[index]!,frame);progress(10+(index+1)*6);
         }
         await waitForMemory(controller.signal,budget=>app.log.warn({operation:'shorts',memoryPercent:Math.round(budget.ratio*100)},'Factory waits at a safe memory checkpoint'));
         const shortEffects=scenes.length>1
           ? ACTIVE_EFFECT_IDS.filter(id=>id!=='atmosphere.moving-mist'&&id!=='atmosphere.drifting-particles'&&id!=='transition.soft-fades')
           : ACTIVE_EFFECT_IDS.filter(id=>id!=='story.three-scenes'&&id!=='transition.scene-crossfades'&&id!=='camera.center-push');
-        await (options.render??renderMedia)(images,audio,video,track.type==='audio/wav'?'wav':'mp3',controller.signal,'shorts',release.recipe.visualPreset,p=>progress(30+p.percent*.62),'cinematic',shortEffects);
+        await (options.render??renderMedia)(images,audio,video,track.type==='audio/wav'?'wav':'mp3',controller.signal,'shorts',release.recipe.visualPreset,p=>progress(30+p.percent*.62),'cinematic',shortEffects,activeLyricOverlays);
         const size=(await stat(video)).size;if(size>SHORTS_MAX_BYTES)throw Error('Shorts exceeds reservation');
         progress(94);await waitForMemory(controller.signal,budget=>app.log.warn({operation:'shorts-upload',memoryPercent:Math.round(budget.ratio*100)},'Factory waits at a safe memory checkpoint'));await fileToStorage(s,output.object_key,video,'video/mp4');
         await factoryLock(async db=>{await db.query("UPDATE factory_assets SET state='ready',bytes=$2 WHERE id=$1",[output.id,size]);await db.query("UPDATE factory_releases SET short_state='review',short_progress=100,short_error=NULL,short_updated_at=NOW() WHERE id=$1 AND short_state='rendering'",[release.id]);});

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { mediaKind } from './media-render.js';
 import { openAIConfig, openAIRequest, OpenAIProviderError } from './openai-provider.js';
+import type { ShortsLyricCue } from './shorts-lyrics.js';
 
 export const MAX_GENERATED_IMAGE_BYTES = 8 * 1024 * 1024;
 export const GENERATED_SCENE_COUNT = 3;
@@ -8,7 +9,7 @@ export type SceneConcept = { hash:string; prompt:string; seed:number; scene:stri
 export type ReleaseConcept = { hash: string; title: string; prompt: string; seed: number; scene: string; scenes:SceneConcept[] };
 export type SongVisualBrief = { title:string; concept:string; artworkPrompt:string };
 export type ShortsStoryScene = {position:number;label:string;timing:string;motion:string;moment:string;prompt:string;seed:number;hash:string};
-export type ShortsStoryPlan = {version:1;format:'story';hook:string;story:string;identity:string;scenes:ShortsStoryScene[]};
+export type ShortsStoryPlan = {version:1;format:'story';hook:string;story:string;identity:string;scenes:ShortsStoryScene[];kineticText:{mode:'pending'|'transcribed'|'story-captions';cues:ShortsLyricCue[]}};
 export type ImageFormat = 'landscape'|'portrait';
 export type ImageGenerator = (prompt: string, seed: number, signal?: AbortSignal, options?:{format?:ImageFormat}) => Promise<{ data: Buffer; type: 'image/jpeg'|'image/png' }>;
 
@@ -80,7 +81,7 @@ export function buildShortsStoryPlan(releaseKey:string,title:string,recipe:Recor
     const hash=createHash('sha256').update(`${releaseKey}:${position}:${prompt}`).digest('hex'),sceneDigest=createHash('sha256').update(hash).digest();
     return {position,label:beat.label,timing:beat.timing,motion:beat.motion,moment:beat.moment,prompt,seed:sceneDigest.readUInt32BE(0)&0x7fffffff,hash};
   });
-  return {version:1,format:'story',hook,story,identity,scenes};
+  return {version:1,format:'story',hook,story,identity,scenes,kineticText:{mode:'pending',cues:[]}};
 }
 
 export function createCloudflareImageGenerator(): ImageGenerator | null {
