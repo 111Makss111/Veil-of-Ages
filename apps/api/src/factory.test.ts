@@ -12,9 +12,9 @@ process.env.DATABASE_URL='postgresql://test:test@localhost/test';
 process.env.PUBLIC_API_URL='https://api.example.test';
 const { pool }=await import('./db.js');
 const { chooseVisualPreset, factoryMigration, reserveAsset }=await import('./factory-store.js');
-const { buildReleaseConcept,buildShortsConcept }=await import('./factory-ai.js');
+const { buildReleaseConcept,buildShortsConcept,buildShortsStoryPlan }=await import('./factory-ai.js');
 const { factorySongMigration }=await import('./factory-song.js');
-const { buildYoutubeThumbnail,buildShortsArtwork }=await import('./factory-thumbnail.js');
+const { buildYoutubeThumbnail,buildShortsArtwork,buildShortsStoryArtwork }=await import('./factory-thumbnail.js');
 const { factoryRoutes }=await import('./factory.js');
 
 test('factory browser script parses and storage fails closed without configuration',()=>{
@@ -24,7 +24,9 @@ test('factory browser script parses and storage fails closed without configurati
   assert.match(factoryScript,/Створити Shorts на 30 секунд/);
   assert.match(factoryScript,/Опублікувати саме Shorts/);
   assert.match(factoryScript,/Створити інший вертикальний образ/);
-  assert.match(factoryScript,/безпечній центральній зоні/);
+  assert.match(factoryScript,/Підготувати сюжет Shorts/);
+  assert.match(factoryScript,/function shortPlanView/);
+  assert.match(factoryScript,/Створити сюжетний Shorts/);
   assert.match(factoryScript,/Завантажити повне відео приватно на YouTube/);
   assert.match(factoryScript,/form\.hidden=!!active/);
   assert.match(factoryScript,/Копіювати назву/);
@@ -75,6 +77,14 @@ test('factory asks for a dedicated safe portrait composition for Shorts',()=>{
   assert.match(concept.prompt,/vertical 9:16/);assert.match(concept.prompt,/central 55%/);assert.match(concept.prompt,/never crop a person/);assert.doesNotMatch(concept.prompt,/#Shorts/);
 });
 
+test('factory creates a reviewable three-scene Shorts micro-story',()=>{
+  const plan=buildShortsStoryPlan('release-1','Gold Beneath the Snow',{youtubeDescription:'Two travelers return to a winter fjord after a broken oath. #Shorts'});
+  assert.equal(plan.format,'story');assert.equal(plan.scenes.length,3);assert.ok(plan.hook.length<=96);
+  assert.deepEqual(plan.scenes.map(scene=>scene.label),['Гачок','Вибір','Кульмінація']);
+  assert.equal(new Set(plan.scenes.map(scene=>scene.hash)).size,3);
+  for(const scene of plan.scenes){assert.match(scene.prompt,/VERTICAL 9:16 COMPOSITION/);assert.match(scene.prompt,/Character continuity anchor/);}
+});
+
 test('factory builds a bounded branded YouTube thumbnail',async()=>{
   const source=Buffer.from('<svg width="1280" height="720" xmlns="http://www.w3.org/2000/svg"><rect width="1280" height="720" fill="#31513a"/></svg>');
   const thumbnail=await buildYoutubeThumbnail(source,'Oath Beneath the Winter Mountain');
@@ -86,6 +96,8 @@ test('factory composes a vertical branded Shorts frame',async()=>{
   const source=Buffer.from('<svg width="1280" height="720" xmlns="http://www.w3.org/2000/svg"><rect width="1280" height="720" fill="#31513a"/></svg>');
   const artwork=await buildShortsArtwork(source,'The Bell Beneath the Ice');const metadata=await sharp(artwork).metadata();
   assert.equal(metadata.width,720);assert.equal(metadata.height,1280);assert.equal(metadata.format,'jpeg');
+  const opening=await buildShortsStoryArtwork(source,'The Bell Beneath the Ice',0,'They returned without the final longship');const openingMetadata=await sharp(opening).metadata();assert.equal(openingMetadata.width,720);assert.equal(openingMetadata.height,1280);
+  const middle=await buildShortsStoryArtwork(source,'The Bell Beneath the Ice',1,'Unused hook');assert.equal((await sharp(middle).metadata()).height,1280);
 });
 
 test('factory: durable library, quotas, duplicates, reservation, retry, review and private upload',async()=>{
@@ -161,13 +173,15 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
     await q("INSERT INTO youtube_uploads(file_hash,state) VALUES($1,'uncertain')",[outputHash]);
     await q("UPDATE youtube_uploads SET state='uncertain',video_id=NULL WHERE file_hash=$1",[outputHash]);await q("UPDATE factory_releases SET state='uncertain',video_id=NULL,error='lost response' WHERE id=$1",[id]);
     const resetUpload=await post('/api/factory/releases/'+id+'/resolve-upload',{target:'video',action:'reset',confirmation:'NOT_ON_YOUTUBE'});assert.equal(resetUpload.statusCode,200,resetUpload.body);assert.equal(((await q('SELECT state FROM factory_releases WHERE id=$1',[id])).rows[0] as {state:string}).state,'review');await q("UPDATE factory_releases SET state='private',video_id='abcdefghijk' WHERE id=$1",[id]);
+    const generatedBeforePlan=generated,shortPlan=await post('/api/factory/releases/'+id+'/shorts-plan',{});assert.equal(shortPlan.statusCode,200,shortPlan.body);assert.equal(shortPlan.json().plan.scenes.length,3);assert.equal(generated,generatedBeforePlan);
+    const plannedRow=(await q('SELECT short_plan FROM factory_releases WHERE id=$1',[id])).rows[0] as {short_plan:{hook:string;scenes:unknown[]}};assert.ok(plannedRow.short_plan.hook);assert.equal(plannedRow.short_plan.scenes.length,3);assert.equal((await q('SELECT * FROM factory_short_scenes WHERE release_id=$1',[id])).rows.length,3);
     const shortsStart=await post('/api/factory/releases/'+id+'/shorts',{});assert.equal(shortsStart.statusCode,202,shortsStart.body);
     for(let i=0;i<100;i++){const row=(await q('SELECT short_state,short_output_id FROM factory_releases WHERE id=$1',[id])).rows[0] as {short_state:string;short_output_id:string};if(row.short_state==='review'){assert.equal((await app.inject('/api/factory/assets/'+row.short_output_id+'/file')).statusCode,200);const poster=await app.inject('/api/factory/releases/'+id+'/shorts-poster');assert.equal(poster.statusCode,200);assert.equal((await sharp(poster.rawPayload).metadata()).height,1280);break;}if(i===99)assert.fail('Expected Shorts review state');await new Promise(resolve=>setTimeout(resolve,10));}
-    assert.equal(renderFormats.at(-1),'shorts');assert.equal(renderSceneCounts.at(-1),1);assert.equal(imageFormats.at(-1),'portrait');
-    const shortRow=(await q('SELECT short_cover_id FROM factory_releases WHERE id=$1',[id])).rows[0] as {short_cover_id:string|null};assert.ok(shortRow.short_cover_id);
+    assert.equal(renderFormats.at(-1),'shorts');assert.equal(renderSceneCounts.at(-1),3);assert.deepEqual(imageFormats.slice(-3),['portrait','portrait','portrait']);
+    const shortRow=(await q('SELECT short_cover_id,short_plan FROM factory_releases WHERE id=$1',[id])).rows[0] as {short_cover_id:string|null;short_plan:unknown};assert.ok(shortRow.short_cover_id);assert.ok(shortRow.short_plan);
     const generatedBefore=generated,regenerate=await post('/api/factory/releases/'+id+'/shorts',{regenerate:true});assert.equal(regenerate.statusCode,202,regenerate.body);
     for(let i=0;i<100;i++){const row=(await q('SELECT short_state FROM factory_releases WHERE id=$1',[id])).rows[0] as {short_state:string};if(row.short_state==='review')break;if(i===99)assert.fail('Expected regenerated Shorts review state');await new Promise(resolve=>setTimeout(resolve,10));}
-    assert.equal(generated,generatedBefore+1);assert.equal(imageFormats.at(-1),'portrait');
+    assert.equal(generated,generatedBefore+3);assert.deepEqual(imageFormats.slice(-3),['portrait','portrait','portrait']);
     assert.equal((await post('/api/factory/releases/'+id+'/publish-short',{children:'no',synthetic:'yes',rights:false})).statusCode,400);assert.equal(published,1);
     const shortPublish=await post('/api/factory/releases/'+id+'/publish-short',{children:'no',synthetic:'yes',rights:true});assert.equal(shortPublish.statusCode,200,shortPublish.body);assert.equal(published,2);assert.equal(shortPublish.json().videoId,'abcdefghijk');
     const shortPublished=(await q('SELECT short_publish_state,short_video_id FROM factory_releases WHERE id=$1',[id])).rows[0] as {short_publish_state:string;short_video_id:string};assert.equal(shortPublished.short_publish_state,'private');assert.equal(shortPublished.short_video_id,'abcdefghijk');
@@ -178,8 +192,8 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
     const reconcileIdeaId=randomUUID(),reconcileSong={title:release.title,concept:'A keeper returns to the northern castle and completes an old promise before winter.',lyrics:'[Verse 1]\n'+('The northern road remembers every name\n'.repeat(12))+'[Chorus]\n'+('We carry home the flame again\n'.repeat(8)),sunoPrompt:'Epic Viking anthem with a low male lead, controlled choir, frame drums and bowed strings.',artworkPrompt:'Two original adult Vikings beside a northern castle, cinematic realism, no text or logos.'};
     await q("INSERT INTO factory_song_ideas(id,channel_id,mode,brief,state,content,approved_at) VALUES($1,'veil-of-ages','viking-anthem','Reconcile test','approved',$2,NOW())",[reconcileIdeaId,JSON.stringify(reconcileSong)]);
     const reconciled=await uploadIdea(mp3,'Castle.mp3',reconcileIdeaId);assert.equal(reconciled.statusCode,200,reconciled.body);assert.equal(reconciled.json().alreadyReleased,true);assert.equal(reconciled.json().releaseId,id);assert.equal(((await q('SELECT audio_id FROM factory_song_ideas WHERE id=$1',[reconcileIdeaId])).rows[0] as {audio_id:string}).audio_id,audio.json().id);assert.equal(((await q('SELECT recipe FROM factory_releases WHERE id=$1',[id])).rows[0] as {recipe:{ideaId:string}}).recipe.ideaId,reconcileIdeaId);
-    const removed=await post('/api/factory/releases/'+id+'/delete',{confirmation:'DELETE'});assert.equal(removed.statusCode,200,removed.body);assert.equal((await q('SELECT * FROM factory_releases WHERE id=$1',[id])).rows.length,0);assert.equal((await q("SELECT * FROM factory_assets WHERE kind='audio' AND id=$1",[audio.json().id])).rows.length,1);assert.equal(deletes,4);
-    assert.equal((await post('/api/factory/assets/'+audio.json().id+'/delete',{confirmation:'DELETE'})).statusCode,200);assert.equal(deletes,5);
+    const removed=await post('/api/factory/releases/'+id+'/delete',{confirmation:'DELETE'});assert.equal(removed.statusCode,200,removed.body);assert.equal((await q('SELECT * FROM factory_releases WHERE id=$1',[id])).rows.length,0);assert.equal((await q("SELECT * FROM factory_assets WHERE kind='audio' AND id=$1",[audio.json().id])).rows.length,1);assert.equal(deletes,6);
+    assert.equal((await post('/api/factory/assets/'+audio.json().id+'/delete',{confirmation:'DELETE'})).statusCode,200);assert.equal(deletes,7);
     const ideaId=randomUUID(),song={title:'Oath Beneath the Mountain',concept:'Two siblings return from exile and answer the call of their mountain home.',lyrics:'[Verse 1]\n'+('We carry the winter road beneath our feet\n'.repeat(12))+'[Chorus]\n'+('The mountain calls us home again\n'.repeat(8)),sunoPrompt:'Nordic cinematic hip-hop, low male rap verses, melodic female chorus, frame drums and bowed strings.',artworkPrompt:'Two original adult Vikings overlooking a stormy Nordic fjord, forest green and muted gold, cinematic realism, no text.'};
     await q("INSERT INTO factory_song_ideas(id,channel_id,mode,brief,state,content,approved_at) VALUES($1,'veil-of-ages','viking-rap-duet','Linked test','approved',$2,NOW())",[ideaId,JSON.stringify(song)]);
     const ideaUpload=await uploadIdea(Buffer.from('ID3-linked-approved-song-audio'),'download.mp3',ideaId,'Old browser description '.repeat(30));assert.equal(ideaUpload.statusCode,201,ideaUpload.body);

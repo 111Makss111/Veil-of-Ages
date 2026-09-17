@@ -87,7 +87,7 @@ CREATE TABLE IF NOT EXISTS factory_releases (
  state TEXT NOT NULL CHECK(state IN ('rendering','review','failed','publishing','private','uncertain')),
  error TEXT, video_id TEXT, progress INTEGER NOT NULL DEFAULT 0, stage TEXT NOT NULL DEFAULT 'queued', progress_detail TEXT NOT NULL DEFAULT '',
  started_at TIMESTAMPTZ, render_started_at TIMESTAMPTZ, processed_seconds DOUBLE PRECISION, render_duration DOUBLE PRECISION,
- short_output_id UUID REFERENCES factory_assets(id), short_cover_id UUID REFERENCES factory_assets(id), short_cover_prompt TEXT, short_cover_seed BIGINT, short_state TEXT CHECK(short_state IN ('rendering','review','failed')),
+ short_output_id UUID REFERENCES factory_assets(id), short_cover_id UUID REFERENCES factory_assets(id), short_cover_prompt TEXT, short_cover_seed BIGINT, short_plan JSONB, short_state TEXT CHECK(short_state IN ('rendering','review','failed')),
  short_error TEXT, short_progress INTEGER NOT NULL DEFAULT 0, short_started_at TIMESTAMPTZ, short_updated_at TIMESTAMPTZ,
  short_publish_state TEXT CHECK(short_publish_state IN ('publishing','private','uncertain')), short_video_id TEXT, short_publish_error TEXT,
  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -104,6 +104,7 @@ ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_output_id UUID REFER
 ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_cover_id UUID REFERENCES factory_assets(id);
 ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_cover_prompt TEXT;
 ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_cover_seed BIGINT;
+ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_plan JSONB;
 ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_state TEXT CHECK(short_state IN ('rendering','review','failed'));
 ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_error TEXT;
 ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_progress INTEGER NOT NULL DEFAULT 0;
@@ -118,6 +119,13 @@ CREATE TABLE IF NOT EXISTS factory_release_scenes (
  position INTEGER NOT NULL CHECK(position>=0 AND position<3),
  asset_id UUID NOT NULL REFERENCES factory_assets(id),
  label TEXT NOT NULL, prompt TEXT NOT NULL, seed BIGINT NOT NULL,
+ PRIMARY KEY(release_id,position)
+);
+CREATE TABLE IF NOT EXISTS factory_short_scenes (
+ release_id UUID NOT NULL REFERENCES factory_releases(id) ON DELETE CASCADE,
+ position INTEGER NOT NULL CHECK(position>=0 AND position<3),
+ asset_id UUID NOT NULL REFERENCES factory_assets(id),
+ label TEXT NOT NULL, timing TEXT NOT NULL, motion TEXT NOT NULL, prompt TEXT NOT NULL, seed BIGINT NOT NULL,
  PRIMARY KEY(release_id,position)
 );
 `;

@@ -89,7 +89,7 @@ export function buildCinematicFilters(width: number, height: number, duration: n
   const sceneOutputs:string[]=[];
   for(let index=0;index<count;index++){
     const source=`scene${index}`,base=`base${index}`,graded=`graded${index}`;
-    const fitted=has('camera.center-push')&&count===1
+    const fitted=has('camera.center-push')
       ?`scale=${overscanWidth}:${overscanHeight}:force_original_aspect_ratio=increase,crop=${overscanWidth}:${overscanHeight},zoompan=z='1+${motion.zoom.toFixed(3)}*on/${frames}':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2':d=1:s=${width}x${height}:fps=24`
       :`scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},fps=24`;
     video.push(`[${index}:v]trim=duration=${segment.toFixed(3)},setpts=PTS-STARTPTS,${fitted},settb=AVTB${has('atmosphere.moving-mist')?`,split=2[${source}][mistseed${index}]`:`[${source}]`}`);

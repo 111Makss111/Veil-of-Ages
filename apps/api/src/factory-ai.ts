@@ -7,6 +7,8 @@ export const GENERATED_SCENE_COUNT = 3;
 export type SceneConcept = { hash:string; prompt:string; seed:number; scene:string; label:string };
 export type ReleaseConcept = { hash: string; title: string; prompt: string; seed: number; scene: string; scenes:SceneConcept[] };
 export type SongVisualBrief = { title:string; concept:string; artworkPrompt:string };
+export type ShortsStoryScene = {position:number;label:string;timing:string;motion:string;moment:string;prompt:string;seed:number;hash:string};
+export type ShortsStoryPlan = {version:1;format:'story';hook:string;story:string;identity:string;scenes:ShortsStoryScene[]};
 export type ImageFormat = 'landscape'|'portrait';
 export type ImageGenerator = (prompt: string, seed: number, signal?: AbortSignal, options?:{format?:ImageFormat}) => Promise<{ data: Buffer; type: 'image/jpeg'|'image/png' }>;
 
@@ -50,6 +52,35 @@ export function buildShortsConcept(releaseKey:string,title:string,recipe:Record<
   const story=String(recipe.youtubeDescription||recipe.scene||'An original Viking song story in the Veil of Ages world.').replace(/#[\w-]+/g,' ').replace(/\s+/g,' ').trim().slice(0,900);
   const prompt=`Create a brand-new dedicated vertical 9:16 key visual for a 30-second YouTube Shorts presentation of the original Veil of Ages song “${title}”. Story and mood: ${story}. Epic Nordic cinematic realism, historically inspired wool, leather, iron and weathered timber, forest-green, slate, charcoal and muted-gold palette, dramatic natural atmosphere, premium photographic depth. IMPORTANT PORTRAIT COMPOSITION: place the main adult Viking character or pair fully inside the central 55% of the frame; show complete faces, heads, shoulders and hands; never crop a person at the left or right edge; keep all important subjects inside a safe central area with generous scenery on both sides; preserve calm negative space at the top for the brand and across the lower third for the song title. One clear focal point, strong vertical depth from foreground to distant landscape. Completely original people and setting. No readable text, letters, logo, watermark, border, duplicate people, celebrity likeness or modern objects.`;
   return {hash:createHash('sha256').update(prompt+releaseKey).digest('hex'),prompt,seed:digest.readUInt32BE(0)&0x7fffffff};
+}
+
+function shortsStory(recipe:Record<string,unknown>){
+  return String(recipe.storyConcept||recipe.youtubeDescription||recipe.scene||'An original Viking song story in the Veil of Ages world.')
+    .replace(/#[\w-]+/g,' ').replace(/Original Viking song from Veil of Ages\.?/gi,' ').replace(/\s+/g,' ').trim().slice(0,1100);
+}
+function shortsHook(story:string,title:string){
+  const first=(story.split(/(?<=[.!?])\s+/)[0]||'').replace(/[.!?]+$/,'').trim(),words=first.split(/\s+/).filter(Boolean);
+  if(words.length>=4)return (words.slice(0,12).join(' ')+(words.length>12?'…':'')).slice(0,96);
+  return `One oath changed the fate of ${title}`.slice(0,96);
+}
+export function buildShortsStoryPlan(releaseKey:string,title:string,recipe:Record<string,unknown>={}):ShortsStoryPlan{
+  const story=shortsStory(recipe),digest=createHash('sha256').update(`short-story:${releaseKey}:${title}:${story}`).digest();
+  const hair=['dark braided hair and a short weathered beard','ash-brown braided hair and a narrow scar over his right eyebrow','long black hair tied with a leather cord and a frost-marked beard'];
+  const woman=['a pale-blonde crown braid and clear grey eyes','a copper braid over one shoulder and determined green eyes','dark braided hair with small bronze rings and intense blue eyes'];
+  const tokens=['a broken iron oath ring','a carved whale-bone pendant','a weathered strip of red sailcloth'];
+  const identity=`The man has ${pick(hair,digest[0]??0)}. The woman has ${pick(woman,digest[1]??0)}. Their shared visual token is ${pick(tokens,digest[2]??0)}.`;
+  const hook=shortsHook(story,title);
+  const beats=[
+    {label:'Гачок',timing:'0–7 с',motion:'Повільне наближення до облич',moment:`Open on the unresolved danger behind this hook: “${hook}”. Both characters immediately react to the same threat or discovery.`},
+    {label:'Вибір',timing:'7–18 с',motion:'Вертикальне розкриття простору',moment:'The same man and woman make a difficult choice and move through the environment; show a clear physical action rather than a posed portrait.'},
+    {label:'Кульмінація',timing:'18–30 с',motion:'Сильніше наближення і фінальний погляд',moment:'Resolve the visual question at the emotional peak: the same pair face the consequence together, with the shared visual token clearly returning in frame.'}
+  ];
+  const scenes=beats.map((beat,position)=>{
+    const prompt=`Create scene ${position+1} of 3 for a coherent 30-second vertical Veil of Ages micro-story for the original song “${title}”. Full song story: ${story}. Character continuity anchor: ${identity} Story beat: ${beat.moment} ${beat.motion}. Epic Nordic cinematic realism, emotionally specific adult Viking man and adult Viking woman, historically inspired wool, leather, iron and weathered timber, forest-green, slate, charcoal and muted-gold palette, dramatic natural atmosphere, premium photographic depth. VERTICAL 9:16 COMPOSITION: keep complete faces, heads, shoulders and important hands inside the central 60%; preserve safe space away from interface edges. The characters, faces, costumes, location, weather and shared token must visibly match the other scenes. No posed album-cover composition, fantasy armor, modern objects, readable text, letters, typography, logo, watermark, border, duplicate people or celebrity likeness.`;
+    const hash=createHash('sha256').update(`${releaseKey}:${position}:${prompt}`).digest('hex'),sceneDigest=createHash('sha256').update(hash).digest();
+    return {position,label:beat.label,timing:beat.timing,motion:beat.motion,moment:beat.moment,prompt,seed:sceneDigest.readUInt32BE(0)&0x7fffffff,hash};
+  });
+  return {version:1,format:'story',hook,story,identity,scenes};
 }
 
 export function createCloudflareImageGenerator(): ImageGenerator | null {
