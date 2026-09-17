@@ -1,7 +1,7 @@
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createOpenAIImageGenerator } from './factory-ai.js';
-import { buildOpenAISongRequest, buildSongPrompt, buildSunoStylePrompt, chooseMusicDirection, isConciseSongTitle } from './factory-song.js';
+import { buildOpenAISongRequest, buildSongPrompt, isConciseSongTitle } from './factory-song.js';
 import { DEFAULT_OPENAI_IMAGE_MODEL, DEFAULT_OPENAI_TEXT_MODEL, openAIConfig, openAIRequest } from './openai-provider.js';
 
 const originalFetch=globalThis.fetch,originalKey=process.env.OPENAI_API_KEY,originalTextModel=process.env.OPENAI_TEXT_MODEL,originalImageModel=process.env.OPENAI_IMAGE_MODEL;
@@ -28,23 +28,19 @@ test('song generator asks Luna for a strict structured package',()=>{
   assert.equal(request.model,DEFAULT_OPENAI_TEXT_MODEL);
   assert.equal(request.text.format.type,'json_schema');
   assert.equal(request.text.format.strict,true);
-  assert.deepEqual(request.text.format.schema.required,['title','concept','lyrics','sunoPrompt','artworkPrompt','musicProfile']);
+  assert.deepEqual(request.text.format.schema.required,['title','concept','lyrics','sunoPrompt','artworkPrompt']);
   assert.equal(request.text.format.schema.properties.title.maxLength,48);
 });
 
-test('song generator rotates concrete musical DNA instead of repeating one Viking prompt',()=>{
-  const first=chooseMusicDirection('viking-anthem',[],'release-a');
-  const second=chooseMusicDirection('viking-anthem',[{title:'Previous',concept:'Previous concept',musicProfile:{id:first.id}}],'release-a');
-  assert.notEqual(second.id,first.id);
-  const prompt=buildSongPrompt('viking-anthem','A winter homecoming',[],first);
-  assert.match(prompt,new RegExp(String(first.bpm)+' BPM'));
-  assert.match(prompt,new RegExp(first.meter.replace('/','\\/')));
-  assert.match(prompt,/Do not fall back to the usual generic combination/);
-  assert.match(prompt,/exact section sequence/);
-  const firstSuno=buildSunoStylePrompt(first),secondSuno=buildSunoStylePrompt(second);
-  assert.match(firstSuno,new RegExp(String(first.bpm)+' BPM'));
-  assert.notEqual(firstSuno,secondSuno);
-  assert.ok(firstSuno.length<=1000);
+test('song generator uses the original proven Viking sound directions',()=>{
+  const anthem=buildSongPrompt('viking-anthem','A winter homecoming',[]);
+  assert.match(anthem,/Epic Viking song for active listening/);
+  assert.match(anthem,/powerful controlled group chorus/);
+  assert.match(anthem,/memorable melodic hook/);
+  const duet=buildSongPrompt('viking-rap-duet','A winter homecoming',[]);
+  assert.match(duet,/Nordic cinematic hip-hop/);
+  assert.match(duet,/strong melodic female answer or duet/);
+  assert.match(duet,/heavy measured drums/);
 });
 
 test('song generator requires a concise title instead of a plot summary',()=>{
