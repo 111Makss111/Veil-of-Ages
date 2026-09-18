@@ -43,6 +43,10 @@ export async function installOwnerAuth(app: FastifyInstance) {
   app.addHook('onRequest', async (request, reply) => {
     const path = request.url.split('?')[0]!;
     if (path === '/health' || (path === '/webhooks/telegram' && request.method === 'POST')) return;
+    // Local montage stations are non-browser clients. Their isolated route
+    // plugin authenticates every request with LOCAL_WORKER_SECRET, so browser
+    // session and Origin checks must not intercept them first.
+    if (path.startsWith('/api/local-worker/')) return;
     reply.header('Cache-Control', 'no-store').header('Referrer-Policy', 'same-origin').header('X-Content-Type-Options', 'nosniff').header('X-Frame-Options', 'DENY');
     if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && request.headers.origin !== origin) return reply.code(403).send({ error: 'Недійсне джерело запиту. Відкрийте кабінет заново.' });
     try {

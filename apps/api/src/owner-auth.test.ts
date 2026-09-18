@@ -38,6 +38,12 @@ test('global boundary blocks secret-only and Google-only access, enforces CSRF a
   pool!.query = (async () => ({ rows: [{ token_hash: 'hash', google_sub: 'owner', verified }] })) as unknown as typeof original;
   const app = Fastify();
   await installOwnerAuth(app);
+  await app.register(async worker => {
+    worker.addHook('onRequest', async (request, reply) => {
+      if (request.headers.authorization !== 'Bearer local-worker-test-secret') return reply.code(401).send({ error: 'worker auth required' });
+    });
+    worker.post('/api/local-worker/heartbeat', async () => ({ ok: true }));
+  });
   const routes = ['/api/status', '/media', '/media/jobs/123/file', '/youtube/upload', '/auth/youtube', '/auth/youtube/callback', '/api/telegram/link/123'];
   for (const url of routes) app.get(url, async () => ({ private: true }));
   app.post('/media/jobs', async () => ({ private: true }));
@@ -50,6 +56,8 @@ test('global boundary blocks secret-only and Google-only access, enforces CSRF a
     }
     assert.equal((await app.inject('/account/login')).statusCode, 200);
     assert.equal((await app.inject('/health')).statusCode, 200);
+    assert.equal((await app.inject({ method: 'POST', url: '/api/local-worker/heartbeat' })).statusCode, 401);
+    assert.equal((await app.inject({ method: 'POST', url: '/api/local-worker/heartbeat', headers: { authorization: 'Bearer local-worker-test-secret' } })).statusCode, 200);
     verified = true;
     for (const url of routes) assert.equal((await app.inject({ url, headers: { cookie } })).statusCode, 200);
     assert.equal((await app.inject({ method: 'POST', url: '/media/jobs', headers: { cookie, origin: 'https://evil.test' } })).statusCode, 403);

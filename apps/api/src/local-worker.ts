@@ -5,13 +5,16 @@ import { hostname, cpus, totalmem, tmpdir } from 'node:os';
 import { extname, join, resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { buildVideoLyricTrack, transcribeVideoLyrics, type VideoLyricCue } from './video-lyrics.js';
 import { checkMediaTools, renderMedia, runMediaTool } from './media-render.js';
 import type { FactoryEffectId, MotionIntensity } from './factory-effects.js';
 import type { CinematicPreset } from './media-render.js';
 
-loadEnv({path:process.env.VEIL_WORKER_ENV||'.env.local-worker'});
+const projectRoot=fileURLToPath(new URL('../../../',import.meta.url));
+const workerEnvPath=process.env.VEIL_WORKER_ENV?resolve(process.cwd(),process.env.VEIL_WORKER_ENV):join(projectRoot,'.env.local-worker');
+loadEnv({path:workerEnvPath});
 
 const jobSchema=z.object({id:z.string().uuid(),lease:z.string().uuid(),title:z.string(),audio:z.object({id:z.string(),type:z.string(),duration:z.number(),url:z.string().url()}),scenes:z.array(z.object({position:z.number(),label:z.string(),type:z.string(),url:z.string().url()})).min(1).max(3),output:z.object({id:z.string(),type:z.literal('video/mp4'),url:z.string().url()}),lyrics:z.string(),preset:z.enum(['ancient-mist','ember-glow','moonlit-ruins']),intensity:z.enum(['calm','cinematic','expressive']),effects:z.array(z.string()),lyricVideo:z.unknown().nullable()});
 type Job=z.infer<typeof jobSchema>;
@@ -22,7 +25,7 @@ if(!/^https?:\/\//.test(apiUrl)||workerSecret.length<32)throw new Error('Set VEI
 
 async function locate(name:'ffmpeg'|'ffprobe'){
   const configured=process.env[name==='ffmpeg'?'FFMPEG_PATH':'FFPROBE_PATH'];if(configured){await access(configured);return configured;}
-  const executable=process.platform==='win32'?name+'.exe':name,root=resolve(process.cwd(),'.tools','ffmpeg');
+  const executable=process.platform==='win32'?name+'.exe':name,root=resolve(projectRoot,'.tools','ffmpeg');
   const walk=async(directory:string,depth:number):Promise<string|null>=>{if(depth<0)return null;for(const item of await readdir(directory,{withFileTypes:true}).catch(()=>[])){const path=join(directory,item.name);if(item.isFile()&&item.name.toLowerCase()===executable)return path;if(item.isDirectory()){const found=await walk(path,depth-1);if(found)return found;}}return null;};
   return await walk(root,4)||executable;
 }
