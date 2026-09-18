@@ -12,3 +12,4 @@ dist/
 .tools/
 test-media/
 exports/
+.env.local-worker

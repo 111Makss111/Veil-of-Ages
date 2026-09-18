@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { openAIConfig, OpenAIProviderError } from './openai-provider.js';
+import { buildWhisperLyricsPrompt } from './video-lyrics.js';
 
 export type ShortsLyricCue = { start:number; end:number; text:string; accent:string };
 type TranscriptionWord = { word?:unknown; start?:unknown; end?:unknown };
@@ -47,9 +48,16 @@ export async function transcribeShortsLyrics(file:string,knownLyrics='',signal?:
   try{
     const audio=await readFile(file);if(audio.length<100||audio.length>4*1024*1024)return null;
     const form=new FormData();form.set('file',new Blob([audio],{type:'audio/mpeg'}),'shorts-clip.mp3');form.set('model','whisper-1');form.set('language','en');form.set('response_format','verbose_json');form.append('timestamp_granularities[]','word');form.set('temperature','0');
-    const guide=knownLyrics.replace(/\[[^\]]+\]/g,' ').replace(/\s+/g,' ').trim().slice(0,2400);if(guide)form.set('prompt',guide);
+    const guide=buildWhisperLyricsPrompt(knownLyrics);if(guide)form.set('prompt',guide);
     const response=await fetch('https://api.openai.com/v1/audio/transcriptions',{method:'POST',redirect:'error',headers:{Authorization:`Bearer ${key}`},body:form,signal:controller.signal});
-    if(!response.ok){await response.body?.cancel();throw new OpenAIProviderError('OpenAI не зміг розпізнати вокал для Shorts.',response.status,[408,409,429,500,502,503,504].includes(response.status));}
+    if(!response.ok){
+      await response.body?.cancel();const retryable=[408,409,429,500,502,503,504].includes(response.status);
+      const message=response.status===400?'OpenAI відхилив параметри синхронізації Shorts (HTTP 400).'
+        :response.status===401||response.status===403?'OpenAI не прийняв локальний API-ключ або доступ до Whisper.'
+        :response.status===429?'OpenAI повернув ліміт запитів або недостатній API-баланс (HTTP 429).'
+        :`OpenAI не зміг розпізнати вокал для Shorts (HTTP ${response.status}).`;
+      throw new OpenAIProviderError(message,response.status,retryable);
+    }
     const payload=await response.json() as {words?:TranscriptionWord[]};const cues=buildShortsLyricCues(Array.isArray(payload.words)?payload.words:[]);
     return cues.length>=2?cues:null;
   }catch(error){

@@ -24,6 +24,30 @@ const accentOf=(words:string[])=>words.filter(Boolean).sort((a,b)=>{
   return bScore-aScore;
 })[0]||words[0]||'';
 
+// whisper-1 accepts only a short prompt (224 tokens). A compact set of
+// distinctive lyric words improves names and Nordic vocabulary without
+// sending the full song text or causing a rejected transcription request.
+export function buildWhisperLyricsPrompt(lyrics:string){
+  const seen=new Set<string>(),keywords:string[]=[];
+  const words=lyrics.replace(/\[[^\]]+]/g,' ').match(/[\p{L}\p{N}][\p{L}\p{N}'’\-]*/gu)||[];
+  for(const value of words){
+    const word=cleanWord(value),key=word.toLowerCase();
+    if(!word||word.length<2||stopWords.has(key)||seen.has(key))continue;
+    seen.add(key);keywords.push(word);
+    if(keywords.length>=80)break;
+  }
+  return keywords.join(', ').slice(0,700);
+}
+
+function transcriptionError(status:number){
+  const retryable=[408,409,429,500,502,503,504].includes(status);
+  const message=status===400?'OpenAI відхилив параметри синхронізації (HTTP 400).'
+    :status===401||status===403?'OpenAI не прийняв локальний API-ключ або доступ до Whisper.'
+    :status===429?'OpenAI повернув ліміт запитів або недостатній API-баланс (HTTP 429).'
+    :`OpenAI не зміг синхронізувати слова повної пісні (HTTP ${status}).`;
+  return new OpenAIProviderError(message,status,retryable);
+}
+
 function sectionText(lyrics:string,label:string){
   const sections=[...lyrics.matchAll(/\[([^\]]+)]([\s\S]*?)(?=\[[^\]]+]|$)/g)];
   return normalize(sections.filter(match=>match[1]!.toLowerCase().includes(label)).map(match=>match[2]).join(' '));
@@ -63,9 +87,9 @@ export async function transcribeVideoLyrics(file:string,knownLyrics:string,durat
   try{
     const audio=await readFile(file);if(audio.length<100||audio.length>24*1024*1024)return null;
     const form=new FormData();form.set('file',new Blob([audio],{type:'audio/mpeg'}),'full-song.mp3');form.set('model','whisper-1');form.set('language','en');form.set('response_format','verbose_json');form.append('timestamp_granularities[]','word');form.set('temperature','0');
-    const guide=knownLyrics.replace(/\[[^\]]+]/g,' ').replace(/\s+/g,' ').trim().slice(0,4000);if(guide)form.set('prompt',guide);
+    const guide=buildWhisperLyricsPrompt(knownLyrics);if(guide)form.set('prompt',guide);
     const response=await fetch('https://api.openai.com/v1/audio/transcriptions',{method:'POST',redirect:'error',headers:{Authorization:`Bearer ${key}`},body:form,signal:controller.signal});
-    if(!response.ok){await response.body?.cancel();throw new OpenAIProviderError('OpenAI не зміг синхронізувати слова повної пісні.',response.status,[408,409,429,500,502,503,504].includes(response.status));}
+    if(!response.ok){await response.body?.cancel();throw transcriptionError(response.status);}
     const payload=await response.json() as {words?:TranscriptionWord[]};const cues=buildVideoLyricCues(Array.isArray(payload.words)?payload.words:[],duration,knownLyrics);
     return cues.length>=4?cues:null;
   }catch(error){

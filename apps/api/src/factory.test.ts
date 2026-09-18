@@ -16,7 +16,7 @@ const { buildReleaseConcept,buildShortsConcept,buildShortsStoryPlan }=await impo
 const { factorySongMigration }=await import('./factory-song.js');
 const { buildYoutubeThumbnail,buildShortsArtwork,buildShortsStoryArtwork,buildKineticLyricOverlay,buildVideoLyricFrame }=await import('./factory-thumbnail.js');
 const { buildShortsLyricCues,buildStoryCaptionCues }=await import('./shorts-lyrics.js');
-const { buildVideoLyricCues }=await import('./video-lyrics.js');
+const { buildVideoLyricCues,buildWhisperLyricsPrompt }=await import('./video-lyrics.js');
 const { factoryRoutes }=await import('./factory.js');
 const { localWorkerRoutes }=await import('./local-worker-api.js');
 
@@ -74,6 +74,13 @@ test('full lyric video groups frequent phrases and highlights chorus lines',asyn
   const cues=buildVideoLyricCues(words,30,'[Chorus — Duet]\nWe carry fire through the night');
   assert.ok(cues.length>=2);assert.ok(cues.some(cue=>cue.emphasis==='chorus'));assert.ok(cues.every(cue=>cue.end>cue.start&&cue.text.length>0));
   const frame=await buildVideoLyricFrame(cues[0]!,0,'hold'),meta=await sharp(frame).metadata();assert.equal(meta.width,1280);assert.equal(meta.height,720);assert.equal(meta.format,'png');
+});
+
+test('Whisper receives a compact keyword prompt instead of the full song',()=>{
+  const lyrics='[Verse 1]\n'+('The northern fire remembers Eirik beside the mountain road\n'.repeat(120));
+  const prompt=buildWhisperLyricsPrompt(lyrics);
+  assert.ok(prompt.length>0&&prompt.length<=700);assert.ok(prompt.split(', ').length<=80);assert.doesNotMatch(prompt,/\[Verse/);
+  assert.equal((prompt.match(/Eirik/gi)||[]).length,1);
 });
 
 test('factory creates a stable three-part visual story',()=>{
