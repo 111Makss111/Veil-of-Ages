@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "npm run dev --workspaces --if-present",
     "build": "npm run build --workspaces --if-present",
+    "worker:local": "npm run worker:local --workspace @veil-of-ages/api",
     "check": "npm run check --workspaces --if-present"
   },
   "dependencies": {

@@ -35,3 +35,5 @@ services:
         sync: false
       - key: CLOUDFLARE_AI_TOKEN
         sync: false
+      - key: LOCAL_WORKER_SECRET
+        sync: false

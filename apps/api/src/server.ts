@@ -9,6 +9,7 @@ import { youtubeUploadRoutes } from './youtube-upload.js';
 import { mediaRoutes } from './media.js';
 import { installOwnerAuth } from './owner-auth.js';
 import { factoryRoutes } from './factory.js';
+import { localWorkerRoutes } from './local-worker-api.js';
 import {
   createTelegramLink,
   getTelegramLinkStatus,
@@ -24,6 +25,7 @@ await installOwnerAuth(app);
 await app.register(youtubeRoutes);
 await app.register(youtubeUploadRoutes);
 await app.register(mediaRoutes);
+await app.register(localWorkerRoutes);
 await app.register(factoryRoutes);
 
 app.get('/api/status', async (_request, reply) => {

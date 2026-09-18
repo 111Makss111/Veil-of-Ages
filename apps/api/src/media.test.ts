@@ -58,6 +58,10 @@ test('cinematic presets build bounded video and audio filter graphs', () => {
   assert.equal((captions.video.match(/enable='between/g)||[]).length,2);
   assert.match(captions.video,/between\(t,0\.400,2\.200\)/);
   assert.match(captions.audio,/\[5:a\]/);
+  const lyricVideo=buildCinematicFilters(1280,720,180,'ancient-mist','cinematic',['camera.center-push','look.dark-fantasy-grade','audio.loudness-master'],1,[],true);
+  assert.match(lyricVideo.video,/\[1:v\]fps=24/);
+  assert.match(lyricVideo.video,/\[lyrictrack\]overlay=x=0:y=0/);
+  assert.match(lyricVideo.audio,/\[2:a\]/);
   assert.notEqual(buildCinematicFilters(1280,720,30,'ancient-mist','calm').video,buildCinematicFilters(1280,720,30,'ancient-mist','expressive').video);
   const minimal=buildCinematicFilters(1280,720,30,'ancient-mist','calm',['camera.center-push','audio.loudness-master']);
   assert.match(minimal.video,/zoompan=/);

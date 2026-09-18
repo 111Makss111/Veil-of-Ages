@@ -9,6 +9,7 @@ export function shortsClip(duration:number){const length=Math.min(SHORTS_DURATIO
 export type CinematicPreset = 'ancient-mist' | 'ember-glow' | 'moonlit-ruins';
 export type MediaProgress = { percent: number; seconds: number; duration: number };
 export type ShortsLyricOverlay = { path:string; start:number; end:number };
+export type VideoLyricTrack = { manifestPath:string; cueCount:number };
 export class MediaToolError extends Error {
   constructor(public reason: 'timeout'|'stalled'|'aborted'|'spawn'|'exit'|'output') {
     super('Не вдалося обробити медіа: перевірте файл, FFmpeg або обмеження часу.');
@@ -64,7 +65,7 @@ export async function checkMediaTools(): Promise<void> {
   await runMediaTool(process.env.FFPROBE_PATH || 'ffprobe', ['-version'], 5000);
 }
 
-export function buildCinematicFilters(width: number, height: number, duration: number, preset: CinematicPreset, intensity:MotionIntensity='cinematic', effects:ReadonlyArray<FactoryEffectId>=ACTIVE_EFFECT_IDS, sceneCount=1, lyricOverlays:ReadonlyArray<ShortsLyricOverlay>=[]) {
+export function buildCinematicFilters(width: number, height: number, duration: number, preset: CinematicPreset, intensity:MotionIntensity='cinematic', effects:ReadonlyArray<FactoryEffectId>=ACTIVE_EFFECT_IDS, sceneCount=1, lyricOverlays:ReadonlyArray<ShortsLyricOverlay>=[],videoLyrics=false) {
   const fadeIn = Math.min(2.5, Math.max(0.25, duration / 5));
   const fadeOut = Math.min(5, Math.max(0.5, duration / 4));
   const fadeOutAt = Math.max(0, duration - fadeOut);
@@ -130,6 +131,12 @@ export function buildCinematicFilters(width: number, height: number, duration: n
     video.push(`[${composed}][caption${index}]overlay=x='(main_w-overlay_w)/2':y=650:enable='between(t,${cue.start.toFixed(3)},${cue.end.toFixed(3)})':eof_action=pass[${next}]`);
     composed=next;
   }
+  if(videoLyrics){
+    const input=count+lyricOverlays.length;
+    video.push(`[${input}:v]fps=24,setpts=PTS-STARTPTS,format=rgba[lyrictrack]`);
+    video.push(`[${composed}][lyrictrack]overlay=x=0:y=0:eof_action=pass:shortest=0[lyricvideo]`);
+    composed='lyricvideo';
+  }
   const finish:string[]=[];
   if(has('framing.vignette'))finish.push(`vignette=${motion.vignette}`);
   if(has('texture.film-grain'))finish.push(`noise=alls=${(1.2*motion.grain).toFixed(2)}:allf=u`);
@@ -140,11 +147,11 @@ export function buildCinematicFilters(width: number, height: number, duration: n
   if(has('audio.loudness-master'))audioFilters.push('loudnorm=I=-14:TP=-1.5:LRA=11');
   audioFilters.push('aresample=48000');
   if(has('transition.soft-fades'))audioFilters.push(`afade=t=in:st=0:d=${fadeIn.toFixed(3)}`,`afade=t=out:st=${fadeOutAt.toFixed(3)}:d=${fadeOut.toFixed(3)}`);
-  const audio = `[${count+lyricOverlays.length}:a]${audioFilters.join(',')}[aout]`;
+  const audio = `[${count+lyricOverlays.length+(videoLyrics?1:0)}:a]${audioFilters.join(',')}[aout]`;
   return { video:video.join(';'), audio };
 }
 
-export async function renderMedia(image: string|string[], audio: string, output: string, audioKind: string, signal?: AbortSignal, format: 'video' | 'shorts' = 'video', preset: CinematicPreset = 'ancient-mist', onProgress?: (progress: MediaProgress) => void, intensity:MotionIntensity='cinematic', effects:ReadonlyArray<FactoryEffectId>=ACTIVE_EFFECT_IDS, lyricOverlays:ReadonlyArray<ShortsLyricOverlay>=[]): Promise<void> {
+export async function renderMedia(image: string|string[], audio: string, output: string, audioKind: string, signal?: AbortSignal, format: 'video' | 'shorts' = 'video', preset: CinematicPreset = 'ancient-mist', onProgress?: (progress: MediaProgress) => void, intensity:MotionIntensity='cinematic', effects:ReadonlyArray<FactoryEffectId>=ACTIVE_EFFECT_IDS, lyricOverlays:ReadonlyArray<ShortsLyricOverlay>=[],videoLyricTrack?:VideoLyricTrack|null): Promise<void> {
   const probe = process.env.FFPROBE_PATH || 'ffprobe';
   const common = ['-v', 'error', '-max_alloc', '67108864', '-protocol_whitelist', 'file,pipe'];
   const images=Array.isArray(image)?image:[image];
@@ -162,7 +169,8 @@ export async function renderMedia(image: string|string[], audio: string, output:
   const clip=format==='shorts'?shortsClip(duration):{start:0,duration};
   const renderDuration = clip.duration;
   const captions=format==='shorts'?lyricOverlays.filter(cue=>Number.isFinite(cue.start)&&Number.isFinite(cue.end)&&cue.start>=0&&cue.end>cue.start&&cue.start<renderDuration).slice(0,12):[];
-  const filters = buildCinematicFilters(targetWidth, targetHeight, renderDuration, preset,intensity,effects,images.length,captions);
+  const fullLyrics=format==='video'&&!!videoLyricTrack;
+  const filters = buildCinematicFilters(targetWidth, targetHeight, renderDuration, preset,intensity,effects,images.length,captions,fullLyrics);
   let progressBuffer='';
   const parseProgress=(chunk:string)=>{
     progressBuffer+=chunk;
@@ -174,12 +182,15 @@ export async function renderMedia(image: string|string[], audio: string, output:
   };
   const imageInputs=images.flatMap(pictureFile=>['-protocol_whitelist','file,pipe','-f','image2','-loop','1','-framerate','24','-i',pictureFile]);
   const lyricInputs=captions.flatMap(cue=>['-protocol_whitelist','file,pipe','-f','image2','-loop','1','-framerate','24','-i',cue.path]);
+  const videoLyricInput=fullLyrics?['-protocol_whitelist','file,pipe','-f','concat','-safe','0','-i',videoLyricTrack!.manifestPath]:[];
+  const useNvenc=process.env.LOCAL_VIDEO_ENCODER==='h264_nvenc',threads=String(Math.max(1,Math.min(8,Number(process.env.MEDIA_THREADS)||1)));
+  const videoCodec=useNvenc?['-c:v','h264_nvenc','-preset','p4','-tune','hq','-rc','vbr','-cq','23','-b:v','0','-maxrate','900k','-bufsize','1800k']:['-c:v','libx264','-threads',threads,'-preset','superfast','-crf','22','-maxrate','900k','-bufsize','1800k'];
   await runMediaTool(process.env.FFMPEG_PATH || 'ffmpeg', [
     '-hide_banner', '-loglevel', 'error', '-nostdin', '-n', '-max_alloc', '67108864', '-filter_threads', '1', '-filter_complex_threads', '1',
-    ...imageInputs,...lyricInputs,
+    ...imageInputs,...lyricInputs,...videoLyricInput,
     '-protocol_whitelist', 'file,pipe', '-f', audioKind, ...(format==='shorts'&&clip.start>0?['-ss',clip.start.toFixed(3)]:[]), '-i', audio,
     '-filter_complex', filters.video+';'+filters.audio, '-map', '[vout]', '-map', '[aout]', '-map_metadata', '-1',
-    '-c:v', 'libx264', '-threads', '1', '-preset', 'superfast', '-crf', '22', '-maxrate', '900k', '-bufsize', '1800k', '-pix_fmt', 'yuv420p',
+    ...videoCodec, '-pix_fmt', 'yuv420p',
     '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-t', String(renderDuration), '-shortest', '-fs', String(MAX_OUTPUT_BYTES), '-movflags', '+faststart',
     '-progress','pipe:1','-nostats',output
   ], 90 * 60 * 1000, signal, parseProgress,5*60*1000);

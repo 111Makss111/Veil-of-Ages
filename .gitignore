@@ -3,6 +3,7 @@ node_modules/
 dist/
 .env
 .env.local
+.env.local-worker
 .npm-cache/
 *.log
 *.tsbuildinfo

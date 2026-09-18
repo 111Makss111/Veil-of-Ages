@@ -1,4 +1,5 @@
-import { S3Client, ListObjectsV2Command, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, ListObjectsV2Command, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
@@ -11,6 +12,9 @@ export interface ObjectStore {
   get(key: string, max: number): Promise<Buffer>;
   putFile?(key: string, path: string, type: string): Promise<number>;
   getFile?(key: string, path: string, max: number): Promise<number>;
+  signedGet?(key:string,expiresSeconds?:number):Promise<string>;
+  signedPut?(key:string,type:string,expiresSeconds?:number):Promise<string>;
+  head?(key:string):Promise<{bytes:number;type:string|null}>;
   delete(key: string): Promise<void>;
 }
 export function createObjectStore(): ObjectStore | null {
@@ -56,6 +60,17 @@ export function createObjectStore(): ObjectStore | null {
       const size=(await stat(path)).size;
       if(size!==result.ContentLength||size>max)throw new Error('Stored file size changed during download');
       return size;
+    },
+    async signedGet(key,expiresSeconds=900){
+      return getSignedUrl(client,new GetObjectCommand({Bucket:bucket,Key:key}),{expiresIn:Math.max(60,Math.min(1800,expiresSeconds))});
+    },
+    async signedPut(key,type,expiresSeconds=900){
+      return getSignedUrl(client,new PutObjectCommand({Bucket:bucket,Key:key,ContentType:type}),{expiresIn:Math.max(60,Math.min(1800,expiresSeconds))});
+    },
+    async head(key){
+      const result=await client.send(new HeadObjectCommand({Bucket:bucket,Key:key}),{abortSignal:AbortSignal.timeout(20000)});
+      if(result.ContentLength===undefined)throw new Error('Stored file has no size');
+      return {bytes:result.ContentLength,type:result.ContentType??null};
     },
     async delete(key) {
       await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }), { abortSignal: AbortSignal.timeout(60000) });

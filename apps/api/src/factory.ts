@@ -22,6 +22,7 @@ import { buildKineticLyricOverlay, buildShortsArtwork, buildShortsStoryArtwork, 
 import { buildStoryCaptionCues, shortsTranscriptionConfigured, transcribeShortsLyrics, type ShortsLyricCue } from './shorts-lyrics.js';
 import { waitForMemory } from './memory-budget.js';
 import { uploadPrivateVideoFile, YoutubeUploadOutcomeError, type Metadata as YoutubeMetadata } from './youtube-upload.js';
+import { getLocalWorkerSummary, localWorkerConfigured } from './local-worker-api.js';
 
 const uuid=z.string().uuid();
 const vocal=z.enum(['instrumental','choir']);
@@ -86,7 +87,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
   app.get('/factory/app.js',async(_req,reply)=>reply.type('application/javascript').send(factoryScript));
   app.get('/api/factory',async()=>{
     // No silent restart of expensive work. A retry explicitly keeps the same track and cover.
-    await requirePool().query("UPDATE factory_releases SET state='failed',stage='interrupted',error='Сервер перестав передавати прогрес. Можна повторити складання з тими самими матеріалами.',updated_at=NOW() WHERE state='rendering' AND updated_at<NOW()-INTERVAL '30 minutes'");
+    await requirePool().query("UPDATE factory_releases SET state='failed',stage='interrupted',error='Сервер перестав передавати прогрес. Можна повторити складання з тими самими матеріалами.',updated_at=NOW() WHERE state='rendering' AND stage<>'waiting-local' AND stage NOT LIKE 'local-%' AND updated_at<NOW()-INTERVAL '30 minutes'");
     await requirePool().query("UPDATE factory_releases SET state='uncertain',error='Передачу перервано. Перевір YouTube Studio перед повторними діями.',updated_at=NOW() WHERE state='publishing' AND updated_at<NOW()-INTERVAL '10 minutes'");
     await requirePool().query("UPDATE factory_releases SET short_publish_state='uncertain',short_publish_error='Передачу Shorts перервано. Перевір YouTube Studio перед повторними діями.',updated_at=NOW() WHERE short_publish_state='publishing' AND updated_at<NOW()-INTERVAL '10 minutes'");
     await requirePool().query("UPDATE factory_releases SET short_state='failed',short_error='Створення Shorts перервав перезапуск сервера. Можна безпечно повторити.',short_updated_at=NOW() WHERE short_state='rendering' AND short_updated_at<NOW()-INTERVAL '30 minutes'");
@@ -104,7 +105,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
       db.query('SELECT * FROM factory_notes ORDER BY completed ASC, updated_at DESC, created_at DESC LIMIT 200')
     ]);
     const availableByChannel:Record<string,Record<string,number>>={};for(const r of counts.rows)(availableByChannel[r.channel_id]??={})[r.vocal]=Number(r.available);
-    return {configured:!!storage,aiConfigured:!!imageGenerator,imageAiProvider:configuredImageProvider,textAiConfigured:textGeneratorConfigured(),textAiProvider:textGeneratorProvider(),shortsLyricsConfigured:!!lyricTranscriber,recipe:recipe.rows[0],effects:EFFECT_CATALOG,assets:assets.rows,releases:releases.rows,ideas:ideas.rows,notes:notes.rows,channels:channels.rows,containers:containers.rows,channelContainers:channelContainers.rows,availableByChannel,availableByVocal:Object.fromEntries(counts.rows.filter(r=>r.channel_id==='veil-of-ages').map(r=>[r.vocal,Number(r.available)])),limit:STORAGE_LIMIT,inputLimit:INPUT_LIMIT};
+    return {configured:!!storage,aiConfigured:!!imageGenerator,imageAiProvider:configuredImageProvider,textAiConfigured:textGeneratorConfigured(),textAiProvider:textGeneratorProvider(),shortsLyricsConfigured:!!lyricTranscriber,localWorker:await getLocalWorkerSummary(),recipe:recipe.rows[0],effects:EFFECT_CATALOG,assets:assets.rows,releases:releases.rows,ideas:ideas.rows,notes:notes.rows,channels:channels.rows,containers:containers.rows,channelContainers:channelContainers.rows,availableByChannel,availableByVocal:Object.fromEntries(counts.rows.filter(r=>r.channel_id==='veil-of-ages').map(r=>[r.vocal,Number(r.available)])),limit:STORAGE_LIMIT,inputLimit:INPUT_LIMIT};
   });
   app.post('/api/factory/notes',async(req,reply)=>{
     const body=z.object({text:z.string().trim().min(1).max(1000)}).strict().parse(req.body);
@@ -433,12 +434,12 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
         if(!scenes.length){const cover=await get(release.cover_id);scenes=[{position:0,label:'Єдина сцена',prompt:release.recipe.prompt,seed:release.recipe.seed,asset_id:cover.id,object_key:cover.object_key,state:cover.state,type:cover.type}];}
         scenes=scenes.slice(0,Math.max(1,Math.min(3,Number(release.recipe?.productionPlan?.sceneCount)||1)));
         const audio=join(workDir,'audio'),images=scenes.map((_scene,index)=>join(workDir,`scene-${index}`)),video=join(workDir,'video.mp4');
-        await update('downloading',7,'Отримуємо музику з приватного сховища R2.',true);
-        await storageToFile(s,track.object_key,audio,UPLOAD_MAX);
         for(const [index,scene] of scenes.entries()){
           if(scene.state==='ready'){
-            await update('downloading',10+index*5,`Отримуємо образ ${index+1} із ${scenes.length} з R2.`,true);
-            await storageToFile(s,scene.object_key,images[index]!,8*1024*1024);
+            if(!localWorkerConfigured()){
+              await update('downloading',10+index*5,`Отримуємо образ ${index+1} із ${scenes.length} з R2.`,true);
+              await storageToFile(s,scene.object_key,images[index]!,8*1024*1024);
+            }
           }else{
             if(release.recipe.coverMode!=='ai'||!imageGenerator)throw Error('Image generator unavailable');
             await update('generating-image',10+index*6,`${configuredImageProvider||'Генератор'} створює образ ${index+1} із ${scenes.length}: ${scene.label}.`,true);
@@ -448,6 +449,12 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
             await requirePool().query("UPDATE factory_assets SET state='ready',bytes=$2,type=$3 WHERE id=$1",[scene.asset_id,generated.data.length,generated.type]);
           }
         }
+        if(localWorkerConfigured()){
+          await update('waiting-local',25,'Матеріали готові. Чекаємо, коли локальна монтажна станція на твоєму ПК забере завдання.',true);
+          await writes;return;
+        }
+        await update('downloading',27,'Отримуємо музику з приватного сховища R2.',true);
+        await storageToFile(s,track.object_key,audio,UPLOAD_MAX);
         await waitForMemory(controller.signal,budget=>{void update('waiting-memory',30,`Пауза між етапами: пам’ять зайнята на ${Math.round(budget.ratio*100)}%. Матеріали вже збережено.`,true);});
         await requirePool().query("UPDATE factory_releases SET render_started_at=NOW(),processed_seconds=0,render_duration=NULL,updated_at=NOW() WHERE id=$1 AND state='rendering'",[release.id]);
         await update('rendering',31,`Запускаємо монтаж V2: ${scenes.length} сцени, атмосфера і звук.`,true);
@@ -479,7 +486,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     const {requestKey,channelId,ideaId}=z.object({requestKey:uuid,channelId:containerId.default('veil-of-ages'),ideaId:uuid.optional()}).strict().parse(req.body);
     const existing=(await requirePool().query('SELECT id,state FROM factory_releases WHERE request_key=$1',[requestKey])).rows[0];
     if(existing)return reply.code(200).send({id:existing.id,state:existing.state});
-    const s=needStorage();if(!options.render)await checkMediaTools();let heavyToken:symbol|null=await beginHeavyAfterCleanup('монтаж повного відео');
+    const s=needStorage();if(!options.render&&!localWorkerConfigured())await checkMediaTools();let heavyToken:symbol|null=await beginHeavyAfterCleanup('підготовка повного відео');
     try{const {release,fresh}=await startRelease(s,requestKey,!!imageGenerator,channelId,ideaId);if(fresh){work(release,heavyToken);heavyToken=null;}
     return reply.code(fresh?202:200).send({id:release.id,state:release.state});}
     finally{if(heavyToken)endHeavy(heavyToken);}
@@ -488,7 +495,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     needStorage();const id=uuid.parse((req.params as {id:string}).id);let heavyToken:symbol|null=await beginHeavyAfterCleanup('повтор монтажу');
     try{const release=await factoryLock(async db=>{
       if((await db.query("SELECT id FROM factory_releases WHERE state='rendering' OR short_state='rendering'")).rowCount)throw new FactoryError(409,'Лінія зайнята.');
-      const r=(await db.query("UPDATE factory_releases SET state='rendering',stage='preparing',progress=2,progress_detail='Готуємо полегшений повтор з одним образом і тими самими матеріалами.',recipe=jsonb_set(recipe,'{productionPlan,sceneCount}','1'::jsonb,true),error=NULL,started_at=NOW(),render_started_at=NULL,processed_seconds=NULL,render_duration=NULL,updated_at=NOW() WHERE id=$1 AND state='failed' RETURNING *",[id])).rows[0];
+      const r=(await db.query("UPDATE factory_releases SET state='rendering',stage='preparing',progress=2,progress_detail='Готуємо безпечний повтор із тими самими матеріалами.',recipe=jsonb_set(recipe,'{productionPlan,sceneCount}','1'::jsonb,true),error=NULL,started_at=NOW(),render_started_at=NULL,processed_seconds=NULL,render_duration=NULL,local_worker_id=NULL,local_worker_lease_hash=NULL,local_worker_lease_until=NULL,updated_at=NOW() WHERE id=$1 AND state='failed' RETURNING *",[id])).rows[0];
       if(!r)throw new FactoryError(409,'Повтор доступний лише для невдалого складання.');return r;
     });work(release,heavyToken);heavyToken=null;return reply.code(202).send({id});}
     finally{if(heavyToken)endHeavy(heavyToken);}

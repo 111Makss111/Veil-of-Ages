@@ -113,7 +113,17 @@ ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_updated_at TIMESTAMP
 ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_publish_state TEXT CHECK(short_publish_state IN ('publishing','private','uncertain'));
 ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_video_id TEXT;
 ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS short_publish_error TEXT;
+ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS local_worker_id TEXT;
+ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS local_worker_lease_hash TEXT;
+ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS local_worker_lease_until TIMESTAMPTZ;
+ALTER TABLE factory_releases ADD COLUMN IF NOT EXISTS local_worker_updated_at TIMESTAMPTZ;
 CREATE UNIQUE INDEX IF NOT EXISTS factory_one_render ON factory_releases((true)) WHERE state='rendering';
+CREATE TABLE IF NOT EXISTS factory_local_workers (
+ id TEXT PRIMARY KEY, name TEXT NOT NULL, capabilities JSONB NOT NULL DEFAULT '{}'::jsonb,
+ state TEXT NOT NULL DEFAULT 'online' CHECK(state IN ('online','busy','offline')),
+ current_release_id UUID REFERENCES factory_releases(id) ON DELETE SET NULL,
+ last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(), created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 CREATE TABLE IF NOT EXISTS factory_release_scenes (
  release_id UUID NOT NULL REFERENCES factory_releases(id) ON DELETE CASCADE,
  position INTEGER NOT NULL CHECK(position>=0 AND position<3),

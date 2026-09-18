@@ -39,3 +39,21 @@ export async function buildKineticLyricOverlay(text:string,accent:string,index=0
   const overlay=Buffer.from(`<svg width="680" height="300" xmlns="http://www.w3.org/2000/svg"><rect x="18" y="18" width="644" height="264" rx="28" fill="#06100b" fill-opacity=".72" stroke="#d8efc2" stroke-opacity=".2"/><text x="340" y="112" text-anchor="middle" fill="${color}" stroke="#06100b" stroke-width="3" paint-order="stroke" font-family="Arial, sans-serif" font-size="68" font-weight="900" letter-spacing="2">${safeAccent}</text><text x="340" y="187" text-anchor="middle" fill="#fff" stroke="#06100b" stroke-width="3" paint-order="stroke" font-family="Arial, sans-serif" font-size="36" font-weight="800">${spans}</text></svg>`);
   return sharp(overlay).png({compressionLevel:9,palette:true}).toBuffer();
 }
+
+function lyricLines(value:string){
+  const words=value.trim().split(/\s+/).filter(Boolean),result:string[]=[];let line='';
+  for(const word of words){const next=line?line+' '+word:word;if(next.length>38&&line){result.push(line);line=word;}else line=next;}
+  if(line)result.push(line);return result.slice(0,2);
+}
+
+export async function buildVideoLyricFrame(cue:{text:string;accent:string;emphasis:'verse'|'chorus'|'bridge';position:'upper'|'center'|'lower'},index=0,phase:'enter'|'hold'='hold'){
+  const strong=cue.emphasis==='chorus',bridge=cue.emphasis==='bridge',opacity=phase==='enter'?.46:1,offset=phase==='enter'?18:0;
+  const yBase=cue.position==='upper'?230:cue.position==='lower'?505:365;
+  const accentSize=strong?86:bridge?74:66,phraseSize=strong?54:bridge?49:45,color=strong?'#e6c776':index%3===1?'#d8b96b':'#c6ed9f';
+  const phrase=lyricLines(cue.text),lineGap=phraseSize+8,startY=yBase+accentSize*.72+28+offset;
+  const spans=phrase.map((line,lineIndex)=>`<tspan x="640" dy="${lineIndex?lineGap:0}">${escapeXml(line)}</tspan>`).join('');
+  const accent=escapeXml(cue.accent.slice(0,32));
+  const underline=strong?`<rect x="500" y="${yBase+18+offset}" width="280" height="4" rx="2" fill="#e6c776" fill-opacity=".8"/>`:'';
+  const overlay=Buffer.from(`<svg width="1280" height="720" xmlns="http://www.w3.org/2000/svg"><g opacity="${opacity}"><text x="640" y="${yBase+offset}" text-anchor="middle" fill="${color}" stroke="#020805" stroke-width="7" paint-order="stroke" font-family="Arial, sans-serif" font-size="${accentSize-(phase==='enter'?5:0)}" font-weight="900" letter-spacing="${strong?4:2}">${accent}</text>${underline}<text x="640" y="${startY}" text-anchor="middle" fill="#f7f8f3" stroke="#020805" stroke-width="6" paint-order="stroke" font-family="Arial, sans-serif" font-size="${phraseSize-(phase==='enter'?3:0)}" font-weight="800">${spans}</text></g></svg>`);
+  return sharp(overlay).png({compressionLevel:9,palette:true}).toBuffer();
+}

@@ -7,10 +7,12 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
+    "worker:local": "tsx src/local-worker.ts",
     "check": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1129.0",
+    "@aws-sdk/s3-request-presigner": "^3.1135.0",
     "@fastify/cors": "^11.1.0",
     "@fastify/multipart": "^10.1.1",
     "dotenv": "^17.2.2",
