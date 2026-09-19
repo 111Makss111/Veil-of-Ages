@@ -14,7 +14,7 @@ import { FactoryError, reserveAsset, startRelease, factoryLock, capacity } from 
 import { factoryPage, factoryCss, factoryScript } from './factory-ui.js';
 import { factoryFavicon } from './factory-favicon.js';
 import { factoryChannelCss } from './factory-channel-ui.js';
-import { buildShortsStoryPlan, createPreferredImageGenerator, imageGeneratorProvider, MAX_GENERATED_IMAGE_BYTES, SHORTS_SCENE_COUNT, type ImageGenerator } from './factory-ai.js';
+import { createShortsStoryPlan, createPreferredImageGenerator, imageGeneratorProvider, MAX_GENERATED_IMAGE_BYTES, SHORTS_SCENE_COUNT, type ImageGenerator } from './factory-ai.js';
 import { ACTIVE_EFFECT_IDS, EFFECT_CATALOG, motionIntensitySchema } from './factory-effects.js';
 import { approveSongIdea, createSongIdea, textGeneratorConfigured, textGeneratorProvider } from './factory-song.js';
 import { songMode, songPackageSchema } from './factory-song-domain.js';
@@ -93,11 +93,12 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
   const needStorage=()=>{if(!storage)throw new FactoryError(503,'Підключи приватне сховище R2 в Render. Файли ще не завантажуються.');return storage;};
   const reserveShortStory=async(db:PoolClient,current:Record<string,any>,regenerate=false)=>{
     if(!imageGenerator)return current;
-    if(current.short_plan&&!regenerate)return current;
+    const currentSceneCount=Array.isArray(current.short_plan?.scenes)?current.short_plan.scenes.length:0;
+    if(current.short_plan&&!regenerate&&currentSceneCount===SHORTS_SCENE_COUNT)return current;
     let storyRecipe=current.recipe||{};
     const ideaId=String(storyRecipe.ideaId||'');
-    if(ideaId){const idea=(await db.query('SELECT content FROM factory_song_ideas WHERE id=$1',[ideaId])).rows[0];if(idea?.content?.lyrics)storyRecipe={...storyRecipe,lyrics:String(idea.content.lyrics).slice(0,1800)};}
-    const plan=buildShortsStoryPlan(randomUUID(),current.title,storyRecipe);
+    if(ideaId){const idea=(await db.query('SELECT content FROM factory_song_ideas WHERE id=$1',[ideaId])).rows[0];if(idea?.content?.lyrics)storyRecipe={...storyRecipe,lyrics:String(idea.content.lyrics).slice(0,7000),storyConcept:String(idea.content.concept||storyRecipe.storyConcept||'')};}
+    const plan=await createShortsStoryPlan(randomUUID(),current.title,storyRecipe);
     const existing=(await db.query('SELECT position,asset_id FROM factory_short_scenes WHERE release_id=$1 ORDER BY position',[current.id])).rows as Array<{position:number;asset_id:string}>;
     const byPosition=new Map(existing.map(row=>[Number(row.position),row.asset_id]));
     if(!byPosition.size&&current.short_cover_id)byPosition.set(0,current.short_cover_id);

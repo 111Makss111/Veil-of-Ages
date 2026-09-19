@@ -12,7 +12,7 @@ process.env.DATABASE_URL='postgresql://test:test@localhost/test';
 process.env.PUBLIC_API_URL='https://api.example.test';
 const { pool }=await import('./db.js');
 const { chooseVisualPreset, factoryMigration, reserveAsset }=await import('./factory-store.js');
-const { buildReleaseConcept,buildShortsConcept,buildShortsStoryPlan }=await import('./factory-ai.js');
+const { buildReleaseConcept,buildShortsConcept,buildShortsStoryPlan,buildOpenAIShortsStoryRequest }=await import('./factory-ai.js');
 const { factorySongMigration }=await import('./factory-song.js');
 const { buildYoutubeThumbnail,buildShortsArtwork,buildShortsStoryArtwork,buildKineticLyricOverlay,buildVideoLyricFrame }=await import('./factory-thumbnail.js');
 const { buildShortsLyricCues,buildStoryCaptionCues }=await import('./shorts-lyrics.js');
@@ -99,10 +99,19 @@ test('factory asks for a dedicated safe portrait composition for Shorts',()=>{
 test('factory creates a reviewable six-scene Shorts micro-story',()=>{
   const plan=buildShortsStoryPlan('release-1','Gold Beneath the Snow',{youtubeDescription:'Two travelers return to a winter fjord after a broken oath. #Shorts'});
   assert.equal(plan.format,'story');assert.equal(plan.scenes.length,6);assert.ok(plan.hook.length<=96);
+  assert.equal(plan.source,'concept-fallback');assert.match(plan.sourceNote,/Слів пісні не знайдено/);
   assert.equal(plan.kineticText.mode,'pending');assert.deepEqual(plan.kineticText.cues,[]);
   assert.deepEqual(plan.scenes.map(scene=>scene.label),['Гачок','Загроза','Вибір','Перехід','Наслідок','Кульмінація']);
   assert.equal(new Set(plan.scenes.map(scene=>scene.hash)).size,6);
   for(const scene of plan.scenes){assert.match(scene.prompt,/VERTICAL 9:16 COMPOSITION/);assert.match(scene.prompt,/Character continuity anchor/);}
+});
+
+test('Shorts story director receives full lyrics and an exact six-scene continuity contract',()=>{
+  const lyrics='[Verse 1 — Male] The harbor bell was buried in the snow.\n[Chorus — Duet] Carry the ember home through the storm.'.repeat(12);
+  const request=buildOpenAIShortsStoryRequest('Embers Across the Fjord','Two exiles cross the winter pass.',lyrics,'test-model') as any;
+  const prompt=request.input[1].content[0].text as string;
+  assert.equal(request.model,'test-model');assert.equal(request.text.format.schema.properties.scenes.minItems,6);assert.equal(request.text.format.schema.properties.scenes.maxItems,6);
+  assert.match(prompt,/exactly six consecutive 5-second clips/);assert.match(prompt,/especially the chorus/);assert.match(prompt,/same adult man and woman/);assert.match(prompt,/harbor bell was buried/);
 });
 
 test('factory builds a bounded branded YouTube thumbnail',async()=>{
