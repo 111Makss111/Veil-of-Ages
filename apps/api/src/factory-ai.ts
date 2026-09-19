@@ -56,8 +56,10 @@ export function buildShortsConcept(releaseKey:string,title:string,recipe:Record<
 }
 
 function shortsStory(recipe:Record<string,unknown>){
-  return String(recipe.storyConcept||recipe.youtubeDescription||recipe.scene||'An original Viking song story in the Veil of Ages world.')
-    .replace(/#[\w-]+/g,' ').replace(/Original Viking song from Veil of Ages\.?/gi,' ').replace(/\s+/g,' ').trim().slice(0,1100);
+  const base=String(recipe.storyConcept||recipe.youtubeDescription||recipe.scene||'An original Viking song story in the Veil of Ages world.')
+    .replace(/#[\w-]+/g,' ').replace(/Original Viking song from Veil of Ages\.?/gi,' ').replace(/\s+/g,' ').trim();
+  const lyricAnchor=String(recipe.lyrics||'').replace(/\[[^\]]+\]/g,' ').replace(/\s+/g,' ').trim().slice(0,520);
+  return (base+(lyricAnchor?' Song lyric anchor: '+lyricAnchor:'' )).slice(0,1100);
 }
 function shortsHook(story:string,title:string){
   const first=(story.split(/(?<=[.!?])\s+/)[0]||'').replace(/[.!?]+$/,'').trim(),words=first.split(/\s+/).filter(Boolean);

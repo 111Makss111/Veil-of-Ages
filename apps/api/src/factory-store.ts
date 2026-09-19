@@ -138,6 +138,13 @@ CREATE TABLE IF NOT EXISTS factory_short_scenes (
  label TEXT NOT NULL, timing TEXT NOT NULL, motion TEXT NOT NULL, prompt TEXT NOT NULL, seed BIGINT NOT NULL,
  PRIMARY KEY(release_id,position)
 );
+CREATE TABLE IF NOT EXISTS factory_short_clips (
+ release_id UUID NOT NULL REFERENCES factory_releases(id) ON DELETE CASCADE,
+ position INTEGER NOT NULL CHECK(position>=0 AND position<6),
+ asset_id UUID NOT NULL REFERENCES factory_assets(id),
+ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+ PRIMARY KEY(release_id,position)
+);
 `;
 export class FactoryError extends Error { constructor(public status: number, message: string) { super(message); } }
 export async function factoryLock<T>(fn: (db: PoolClient) => Promise<T>): Promise<T> {
