@@ -133,11 +133,15 @@ CREATE TABLE IF NOT EXISTS factory_release_scenes (
 );
 CREATE TABLE IF NOT EXISTS factory_short_scenes (
  release_id UUID NOT NULL REFERENCES factory_releases(id) ON DELETE CASCADE,
- position INTEGER NOT NULL CHECK(position>=0 AND position<3),
+ position INTEGER NOT NULL CHECK(position>=0 AND position<6),
  asset_id UUID NOT NULL REFERENCES factory_assets(id),
  label TEXT NOT NULL, timing TEXT NOT NULL, motion TEXT NOT NULL, prompt TEXT NOT NULL, seed BIGINT NOT NULL,
  PRIMARY KEY(release_id,position)
 );
+DO $$ BEGIN
+ ALTER TABLE factory_short_scenes DROP CONSTRAINT IF EXISTS factory_short_scenes_position_check;
+ ALTER TABLE factory_short_scenes ADD CONSTRAINT factory_short_scenes_position_check CHECK(position>=0 AND position<6);
+END $$;
 CREATE TABLE IF NOT EXISTS factory_short_clips (
  release_id UUID NOT NULL REFERENCES factory_releases(id) ON DELETE CASCADE,
  position INTEGER NOT NULL CHECK(position>=0 AND position<6),

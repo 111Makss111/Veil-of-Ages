@@ -218,6 +218,16 @@ textarea {
 .batch-launch > summary { color: #a8bb9e; }
 .batch-launch .hero { margin-bottom: 0; }
 
+.short-storyboard {
+  display: block;
+  width: 100%;
+  aspect-ratio: 9 / 16;
+  object-fit: cover;
+  margin: 0 0 12px;
+  border-radius: 9px;
+  background: #07100a;
+}
+
 @media (max-width: 650px) {
   .channel-dialog-shell { padding: 14px; }
   .container-choices { grid-template-columns: 1fr; }
