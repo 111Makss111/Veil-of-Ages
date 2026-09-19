@@ -36,15 +36,56 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
   const lyricTranscriber=options.lyricTranscriber===undefined?(shortsTranscriptionConfigured()?transcribeShortsLyrics:null):options.lyricTranscriber;
   const publishVideo=options.publisher??uploadPrivateVideoFile;
   const tasks=new Set<Promise<void>>();const jobs=new Map<string,AbortController>();let uploading=false;
-  let heavyOperation:{token:symbol;label:string}|null=null;
+  // This lock protects the single heavy FFmpeg/AI lane. Keep enough metadata to
+  // recover after a cancelled task or a worker that disappeared without running
+  // its finally block (for example, a Render restart during an image request).
+  let heavyOperation:{token:symbol;label:string;startedAt:number;releaseId?:string}|null=null;
   const beginHeavy=(label:string)=>{
     if(heavyOperation)throw new FactoryError(409,`Зараз виконується важка операція «${heavyOperation.label}». Вона збереже свій етап, після чого можна продовжити.`);
-    const token=Symbol(label);heavyOperation={token,label};return token;
+    const token=Symbol(label);heavyOperation={token,label,startedAt:Date.now()};return token;
   };
+  const bindHeavyRelease=(token:symbol,releaseId:string)=>{if(heavyOperation?.token===token)heavyOperation.releaseId=releaseId;};
   const endHeavy=(token:symbol)=>{if(heavyOperation?.token===token)heavyOperation=null;};
+  const recoverHeavy=async()=>{
+    const operation=heavyOperation;
+    if(!operation)return;
+    try{
+      if(operation.releaseId){
+        const row=(await requirePool().query('SELECT state,short_state,short_publish_state FROM factory_releases WHERE id=$1',[operation.releaseId])).rows[0];
+        const active=!!row&&(['rendering','publishing'].includes(String(row.state))||row.short_state==='rendering'||['publishing','uncertain'].includes(String(row.short_publish_state)));
+        // A cancel request may have committed while the old task was still
+        // unwinding. Do not let that old in-memory lock block the next run.
+        if(!active){jobs.get(operation.releaseId)?.abort();endHeavy(operation.token);return;}
+        // Rendering jobs are always registered in `jobs`. If the database still
+        // says rendering but the process has already lost that job, recover the
+        // row instead of making every following request wait for a phantom task.
+        const isRender=operation.label.includes('монтаж')||operation.label.includes('підготовка');
+        if(isRender&&!jobs.has(operation.releaseId)){
+          if(operation.label.includes('Shorts'))await requirePool().query("UPDATE factory_releases SET short_state='failed',short_error='Процес Shorts перервано. Матеріали збережено — можна повторити.',short_updated_at=NOW() WHERE id=$1 AND short_state='rendering'",[operation.releaseId]);
+          else await requirePool().query("UPDATE factory_releases SET state='failed',stage='interrupted',progress_detail='Процес монтажу перервано. Матеріали збережено — можна повторити.',error='Монтаж перервано. Можна безпечно повторити.',updated_at=NOW() WHERE id=$1 AND state='rendering'",[operation.releaseId]);
+          endHeavy(operation.token);return;
+        }
+      }else if(!tasks.size){
+        // The request failed before it could start its background task.
+        endHeavy(operation.token);return;
+      }
+      // A valid render can be long, but it must never hold the lane forever.
+      // This matches the database stale-progress recovery window below.
+      if(Date.now()-operation.startedAt<30*60*1000)return;
+      const id=operation.releaseId;
+      if(id){
+        jobs.get(id)?.abort();
+        if(operation.label.includes('Shorts'))await requirePool().query("UPDATE factory_releases SET short_state='failed',short_error='Процес Shorts не передавав прогрес понад 30 хвилин. Матеріали збережено — можна повторити.',short_updated_at=NOW() WHERE id=$1 AND short_state='rendering'",[id]);
+        else if(operation.label.includes('монтаж')||operation.label.includes('відео'))await requirePool().query("UPDATE factory_releases SET state='failed',stage='interrupted',progress_detail='Монтаж не передавав прогрес понад 30 хвилин. Матеріали збережено — можна повторити.',error='Монтаж зупинено після тривалої відсутності прогресу.',updated_at=NOW() WHERE id=$1 AND state='rendering'",[id]);
+      }
+      endHeavy(operation.token);
+    }catch{ /* keep the lock when the database is temporarily unavailable */ }
+  };
   const beginHeavyAfterCleanup=async(label:string)=>{
+    await recoverHeavy();
     const deadline=Date.now()+15000;
     while(heavyOperation&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,50));
+    await recoverHeavy();
     return beginHeavy(label);
   };
   const storageToFile=async(s:ObjectStore,key:string,path:string,max:number)=>s.getFile?s.getFile(key,path,max):s.get(key,max).then(data=>writeFile(path,data).then(()=>data.length));
@@ -299,6 +340,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     });
   });
   function workShort(release:Record<string,any>,heavyToken:symbol){
+    bindHeavyRelease(heavyToken,release.id);
     const controller=new AbortController();jobs.set(release.id,controller);
     const task=(async()=>{let dir:string|undefined,lastWrite=0;
       const progress=(value:number)=>{const now=Date.now();if(value<99&&now-lastWrite<1500)return;lastWrite=now;void requirePool().query("UPDATE factory_releases SET short_progress=$2,short_updated_at=NOW() WHERE id=$1 AND short_state='rendering'",[release.id,Math.max(1,Math.min(99,Math.round(value)))]).catch(()=>{});};
@@ -401,6 +443,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     jobs.get(id)?.abort();return {cancelled:true,mode};
   });
   function work(release:Record<string,any>,heavyToken:symbol){
+    bindHeavyRelease(heavyToken,release.id);
     const controller=new AbortController();jobs.set(release.id,controller);
     const task=(async()=>{
       let dir:string|undefined,stage='preparing',progress=Number(release.progress)||2,lastStage='',lastProgress=-1,lastWrite=0;
@@ -497,7 +540,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
       if((await db.query("SELECT id FROM factory_releases WHERE state='rendering' OR short_state='rendering'")).rowCount)throw new FactoryError(409,'Лінія зайнята.');
       const r=(await db.query("UPDATE factory_releases SET state='rendering',stage='preparing',progress=2,progress_detail='Готуємо безпечний повтор із тими самими матеріалами.',recipe=jsonb_set(recipe,'{productionPlan,sceneCount}','1'::jsonb,true),error=NULL,started_at=NOW(),render_started_at=NULL,processed_seconds=NULL,render_duration=NULL,local_worker_id=NULL,local_worker_lease_hash=NULL,local_worker_lease_until=NULL,updated_at=NOW() WHERE id=$1 AND state='failed' RETURNING *",[id])).rows[0];
       if(!r)throw new FactoryError(409,'Повтор доступний лише для невдалого складання.');return r;
-    });work(release,heavyToken);heavyToken=null;return reply.code(202).send({id});}
+    });bindHeavyRelease(heavyToken,release.id);work(release,heavyToken);heavyToken=null;return reply.code(202).send({id});}
     finally{if(heavyToken)endHeavy(heavyToken);}
   });
   app.post('/api/factory/releases/:id/resolve-upload',async req=>{
@@ -569,6 +612,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     await waitForMemory(undefined,budget=>app.log.warn({operation:'youtube-video',memoryPercent:Math.round(budget.ratio*100)},'YouTube upload waits at a safe memory checkpoint'));
     const release=(await requirePool().query("UPDATE factory_releases SET state='publishing',updated_at=NOW() WHERE id=$1 AND state='review' RETURNING *",[id])).rows[0];
     if(!release)throw new FactoryError(409,'Випуск не готовий або вже передавався. Не повторюй невідоме завантаження без перевірки YouTube.');
+    bindHeavyRelease(heavyToken,id);
     let mayHaveUploaded=false;
     try{
       const a=(await requirePool().query('SELECT * FROM factory_assets WHERE id=$1',[release.output_id])).rows[0];
@@ -595,6 +639,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     await waitForMemory(undefined,budget=>app.log.warn({operation:'youtube-shorts',memoryPercent:Math.round(budget.ratio*100)},'YouTube upload waits at a safe memory checkpoint'));
     const release=(await requirePool().query("UPDATE factory_releases SET short_publish_state='publishing',short_publish_error=NULL,updated_at=NOW() WHERE id=$1 AND state IN ('review','private','uncertain') AND short_state='review' AND short_output_id IS NOT NULL AND short_publish_state IS NULL RETURNING *",[id])).rows[0];
     if(!release)throw new FactoryError(409,'Shorts не готовий або вже передавався. Не повторюй невідоме завантаження без перевірки YouTube.');
+    bindHeavyRelease(heavyToken,id);
     let mayHaveUploaded=false;
     try{
       const asset=(await requirePool().query("SELECT * FROM factory_assets WHERE id=$1 AND kind='video' AND state='ready'",[release.short_output_id])).rows[0];
