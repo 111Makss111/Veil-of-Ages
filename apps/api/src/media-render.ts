@@ -202,10 +202,10 @@ export async function renderMedia(image: string|string[], audio: string, output:
 
 /**
  * Assemble user-generated vertical clips into a short. The sequence is
- * repeated when the supplied clips are shorter than the selected audio window;
- * this keeps the first MVP useful with 4–8 second AI clips without generating
- * filler images. Each input is scaled/cropped in the stream, so Render does not
- * need to hold all decoded frames in memory at once.
+ * normalized into equal scene windows when all six story clips are present.
+ * Longer clips are trimmed and shorter clips hold their final frame, so every
+ * prompt remains visible in the finished 30-second story. Each input is
+ * scaled/cropped in the stream, so Render does not hold decoded clips in memory.
  */
 export async function renderVideoClips(clips: string[], clipDurations: number[], audio: string, output: string, audioKind: string, signal?: AbortSignal, onProgress?: (progress: MediaProgress) => void): Promise<void> {
   if (clips.length < 1 || clips.length > 6 || clips.length !== clipDurations.length) throw new Error('Потрібно від одного до шести відеофрагментів.');
@@ -217,14 +217,16 @@ export async function renderVideoClips(clips: string[], clipDurations: number[],
   const clipWindow = Math.min(SHORTS_DURATION, audioDuration);
   const validDurations = clipDurations.map(value => Number.isFinite(value) && value > 0 ? Math.min(value, 60) : 0);
   if (validDurations.some(value => value < 0.25) || validDurations.reduce((sum, value) => sum + value, 0) < 0.25) throw new Error('Один із відеофрагментів не має коректної тривалості.');
-  const sequence: Array<{ index: number; duration: number }> = [];
-  let elapsed = 0, cursor = 0;
+  const sequence: Array<{ index: number; duration: number }> = clips.length===6
+    ? clips.map((_clip,index)=>({index,duration:clipWindow/6}))
+    : [];
+  let elapsed=sequence.reduce((sum,segment)=>sum+segment.duration,0),cursor=0;
   while (elapsed < clipWindow - 0.01 && sequence.length < 24) {
     const duration = Math.min(validDurations[cursor]!, clipWindow - elapsed);
     sequence.push({ index: cursor, duration }); elapsed += duration; cursor = (cursor + 1) % clips.length;
   }
   if (!sequence.length) throw new Error('Відеофрагменти порожні.');
-  const filters = sequence.map((segment, index) => `[${index}:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1,fps=24,trim=duration=${segment.duration.toFixed(3)},setpts=PTS-STARTPTS,format=yuv420p[v${index}]`);
+  const filters = sequence.map((segment, index) => `[${index}:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1,fps=24,tpad=stop_mode=clone:stop_duration=${segment.duration.toFixed(3)},trim=duration=${segment.duration.toFixed(3)},setpts=PTS-STARTPTS,format=yuv420p[v${index}]`);
   filters.push(sequence.map((_segment, index) => `[v${index}]`).join('') + `concat=n=${sequence.length}:v=1:a=0[vout]`);
   const audioInputIndex = sequence.length;
   filters.push(`[${audioInputIndex}:a]aresample=48000,afade=t=in:st=0:d=${Math.min(1.5,clipWindow / 5).toFixed(3)},afade=t=out:st=${Math.max(0,clipWindow - Math.min(2,clipWindow / 4)).toFixed(3)}:d=${Math.min(2,clipWindow / 4).toFixed(3)}[aout]`);

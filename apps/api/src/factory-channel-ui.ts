@@ -218,15 +218,33 @@ textarea {
 .batch-launch > summary { color: #a8bb9e; }
 .batch-launch .hero { margin-bottom: 0; }
 
-.short-storyboard {
-  display: block;
-  width: 100%;
-  aspect-ratio: 9 / 16;
-  object-fit: cover;
-  margin: 0 0 12px;
-  border-radius: 9px;
-  background: #07100a;
+.short-prompts { margin: 10px 0 14px; }
+.short-prompts > summary {
+  color: #82967a;
+  font-size: 10px;
+  letter-spacing: .04em;
 }
+.short-prompt-list { display: grid; gap: 5px; margin-top: 9px; }
+.short-prompt-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  color: #9eb092;
+  background: #0a150e;
+  border: 1px solid #c2e59f14;
+  border-radius: 7px;
+  font-size: 10px;
+}
+.short-prompt-row button,
+.short-copy-all { min-width: 0; padding: 5px 8px; font-size: 9px; }
+.short-prompt-row details { margin: 0; }
+.short-prompt-row details > summary { font-size: 9px; color: #71836b; }
+.short-prompt-row details small { display: block; grid-column: 1 / -1; margin-top: 8px; white-space: pre-wrap; }
+.short-copy-all { margin-top: 9px; }
+.short-batch-label { margin-top: 18px; }
+.short-batch-label input { margin-top: 8px; }
 
 @media (max-width: 650px) {
   .channel-dialog-shell { padding: 14px; }
@@ -234,5 +252,7 @@ textarea {
   .steps-six { grid-template-columns: 1fr 1fr; }
   .release-summary { grid-template-columns: 1fr; gap: 12px; }
   .release-summary-actions { justify-content: space-between; }
+  .short-prompt-row { grid-template-columns: 1fr auto; }
+  .short-prompt-row details { grid-column: 1 / -1; }
 }
 `;
