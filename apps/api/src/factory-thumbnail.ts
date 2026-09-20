@@ -44,7 +44,7 @@ export async function buildKineticLyricOverlay(text:string,accent:string,index=0
 
 const shortsManifestFile=(name:string,duration:number)=>`file '${name.replace(/'/g,"'\\''")}'\nduration ${Math.max(.04,duration).toFixed(3)}\n`;
 export async function buildShortsLyricTrack(directory:string,cues:ReadonlyArray<ShortsLyricCue>,duration:number,onProgress?:(done:number,total:number)=>void){
-  const valid=cues.filter(cue=>Number.isFinite(cue.start)&&Number.isFinite(cue.end)&&cue.start>=0&&cue.end>cue.start&&cue.start<duration).slice(0,30);
+  const valid=cues.filter(cue=>Number.isFinite(cue.start)&&Number.isFinite(cue.end)&&cue.start>=0&&cue.end>cue.start&&cue.start<duration).slice(0,72);
   if(!valid.length)return null;
   const emptyName='shorts-lyrics-empty.png',emptyPath=join(directory,emptyName);
   await sharp({create:{width:680,height:220,channels:4,background:{r:0,g:0,b:0,alpha:0}}}).png({compressionLevel:9,palette:true}).toFile(emptyPath);

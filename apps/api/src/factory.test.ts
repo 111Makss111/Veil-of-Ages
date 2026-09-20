@@ -15,7 +15,7 @@ const { chooseVisualPreset, factoryMigration, reserveAsset }=await import('./fac
 const { buildReleaseConcept,buildShortsConcept,buildShortsStoryPlan,buildOpenAIShortsStoryRequest }=await import('./factory-ai.js');
 const { factorySongMigration }=await import('./factory-song.js');
 const { buildYoutubeThumbnail,buildShortsArtwork,buildShortsStoryArtwork,buildKineticLyricOverlay,buildVideoLyricFrame }=await import('./factory-thumbnail.js');
-const { buildManualShortsLyrics,buildShortsLyricCues,selectShortsLyrics }=await import('./shorts-lyrics.js');
+const { alignShortsWordsToRhythm,buildManualShortsLyrics,buildShortsLyricCues,selectShortsLyrics }=await import('./shorts-lyrics.js');
 const { buildVideoLyricCues,buildWhisperLyricsPrompt }=await import('./video-lyrics.js');
 const { factoryRoutes }=await import('./factory.js');
 const { localWorkerRoutes }=await import('./local-worker-api.js');
@@ -24,6 +24,7 @@ test('factory browser script parses and storage fails closed without configurati
   new Script(factoryScript);
   assert.match(factoryScript,/video\.poster=thumbnailUrl/);
   assert.match(factoryScript,/Повторити встановлення обкладинки/);
+  assert.match(factoryScript,/shorts-thumbnail/);
   assert.match(factoryScript,/function conveyorShortsWorkspace/);
   assert.match(factoryScript,/function shortPlanView/);
   assert.match(factoryScript,/ШІ переглядає кадри/);
@@ -148,6 +149,10 @@ test('factory groups timestamped vocal words into bounded kinetic phrases',()=>{
   assert.equal(aligned?.section,'chorus');assert.equal(aligned?.cues[0]?.text,'Stand my ground when');assert.equal(aligned?.cues[1]?.text,'the wolves attack');assert.ok((aligned?.clipStart||0)>0);
   const manual=buildManualShortsLyrics('[Verse]\nCold road\n[Chorus]\nStand my ground\nWhen the wolves attack\nCarry the fire\nWe are coming back',120,46.5);
   assert.equal(manual?.clipStart,46.5);assert.equal(manual?.clipDuration,30);assert.equal(manual?.section,'chorus');assert.equal(manual?.cues.length,14);assert.equal(manual?.cues[0]?.text,'Stand');assert.equal(manual?.cues[1]?.text,'my');assert.ok((manual?.cues.at(-1)?.end||30)<=30);
+  const notPreChorus=buildManualShortsLyrics('[Pre-Chorus]\nDo not use these words\nThey are only a build\n[Chorus]\nRaise the fire together\nCarry the oath forever',90,35);
+  assert.equal(notPreChorus?.cues[0]?.text,'Raise');assert.ok(!notPreChorus?.cues.some(cue=>cue.text==='build'));
+  const rhythmic=alignShortsWordsToRhythm(manual!.cues,[0,.48,1.02,1.53,2.01,2.54,3.04,3.52,4.01,4.49,5.03,5.51,6.02,6.5,7.01,7.5],30);
+  assert.equal(rhythmic.length,manual!.cues.length);assert.ok(rhythmic.some((cue,index)=>Math.abs(cue.start-manual!.cues[index]!.start)>.05));
 });
 
 test('factory: durable library, quotas, duplicates, reservation, retry, review and private upload',async()=>{
@@ -243,8 +248,9 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
     assert.equal(renderFormats.at(-1),'shorts');assert.equal(renderSceneCounts.at(-1),6);assert.equal(lyricOverlayCounts.at(-1),0);assert.ok((lyricTrackCueCounts.at(-1)||0)>=2);assert.equal(imageFormats.filter(format=>format==='portrait').length,0);
     const shortRow=(await q('SELECT short_cover_id,short_plan FROM factory_releases WHERE id=$1',[id])).rows[0] as {short_cover_id:string|null;short_plan:{mode:string;scenes:unknown[]}};assert.equal(shortRow.short_cover_id,null);assert.equal(shortRow.short_plan.mode,'manual-video');assert.equal(shortRow.short_plan.scenes.length,6);
     assert.equal((await post('/api/factory/releases/'+id+'/publish-short',{children:'no',synthetic:'yes',rights:false})).statusCode,400);assert.equal(published,1);
-    const shortPublish=await post('/api/factory/releases/'+id+'/publish-short',{children:'no',synthetic:'yes',rights:true});assert.equal(shortPublish.statusCode,200,shortPublish.body);assert.equal(published,2);assert.equal(shortPublish.json().videoId,'abcdefghijk');
+    const shortPublish=await post('/api/factory/releases/'+id+'/publish-short',{children:'no',synthetic:'yes',rights:true});assert.equal(shortPublish.statusCode,200,shortPublish.body);assert.equal(published,2);assert.equal(shortPublish.json().videoId,'abcdefghijk');assert.equal(shortPublish.json().thumbnailSet,true);assert.equal(thumbnails,3);
     const shortPublished=(await q('SELECT short_publish_state,short_video_id FROM factory_releases WHERE id=$1',[id])).rows[0] as {short_publish_state:string;short_video_id:string};assert.equal(shortPublished.short_publish_state,'private');assert.equal(shortPublished.short_video_id,'abcdefghijk');
+    const shortThumbnail=await post('/api/factory/releases/'+id+'/shorts-thumbnail',{});assert.equal(shortThumbnail.statusCode,200,shortThumbnail.body);assert.equal(shortThumbnail.json().thumbnailSet,true);assert.equal(thumbnails,4);
     const shortOutput=(await q('SELECT a.object_key FROM factory_releases r JOIN factory_assets a ON a.id=r.short_output_id WHERE r.id=$1',[id])).rows[0] as {object_key:string},shortHash=createHash('sha256').update(objects.get(shortOutput.object_key)!).digest('hex');
     await q("INSERT INTO youtube_uploads(file_hash,state,video_id) VALUES($1,'complete','shorts00001')",[shortHash]);await q("UPDATE factory_releases SET state='uncertain',short_publish_state='uncertain',short_video_id=NULL WHERE id=$1",[id]);
     const restoredShort=await post('/api/factory/releases/'+id+'/resolve-upload',{target:'shorts',action:'reconcile'});assert.equal(restoredShort.statusCode,200,restoredShort.body);assert.equal(restoredShort.json().videoId,'shorts00001');const restoredShortRow=(await q('SELECT state,short_publish_state FROM factory_releases WHERE id=$1',[id])).rows[0] as {state:string;short_publish_state:string};assert.equal(restoredShortRow.state,'uncertain');assert.equal(restoredShortRow.short_publish_state,'private');await q("UPDATE factory_releases SET state='private' WHERE id=$1",[id]);

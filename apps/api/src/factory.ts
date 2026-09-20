@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { requirePool } from './db.js';
 import { ownerOrigin } from './owner-auth.js';
-import { mediaKind, videoKind, renderMedia, renderVideoClips, runMediaTool, checkMediaTools, MAX_OUTPUT_BYTES, MediaToolError } from './media-render.js';
+import { mediaKind, videoKind, renderMedia, renderVideoClips, runMediaTool, checkMediaTools, analyzeShortsRhythm, MAX_OUTPUT_BYTES, MediaToolError } from './media-render.js';
 import { createObjectStore, STORAGE_LIMIT, INPUT_LIMIT, type ObjectStore } from './factory-storage.js';
 import { FactoryError, reserveAsset, startRelease, factoryLock, capacity } from './factory-store.js';
 import { factoryPage, factoryCss, factoryScript } from './factory-ui.js';
@@ -19,7 +19,7 @@ import { ACTIVE_EFFECT_IDS, EFFECT_CATALOG, motionIntensitySchema } from './fact
 import { approveSongIdea, createSongIdea, textGeneratorConfigured, textGeneratorProvider } from './factory-song.js';
 import { songMode, songPackageSchema } from './factory-song-domain.js';
 import { buildShortsArtwork, buildShortsLyricTrack, buildYoutubeThumbnail } from './factory-thumbnail.js';
-import { buildManualShortsLyrics, shortsTranscriptionConfigured, transcribeShortsLyrics, type ShortsLyricSelection } from './shorts-lyrics.js';
+import { alignShortsWordsToRhythm, buildManualShortsLyrics, shortsTranscriptionConfigured, transcribeShortsLyrics, type ShortsLyricSelection } from './shorts-lyrics.js';
 import { waitForMemory } from './memory-budget.js';
 import { uploadPrivateVideoFile, YoutubeUploadOutcomeError, type Metadata as YoutubeMetadata } from './youtube-upload.js';
 import { getLocalWorkerSummary, localWorkerConfigured } from './local-worker-api.js';
@@ -29,11 +29,12 @@ const vocal=z.enum(['instrumental','choir']);
 const containerId=z.string().regex(/^[a-z0-9-]{2,40}$/);
 const UPLOAD_MAX=25*1024*1024;
 const SHORTS_MAX_BYTES=16*1024*1024;
-export async function factoryRoutes(app: FastifyInstance, options: { storage?: ObjectStore; render?: typeof renderMedia; renderClips?: typeof renderVideoClips; probe?: (file: string, kind: string) => Promise<number>; imageGenerator?: ImageGenerator|null; lyricTranscriber?:((file:string,knownLyrics:string,duration:number,signal?:AbortSignal)=>Promise<ShortsLyricSelection|null>)|null; clipOrderer?:ShortsClipOrderer|null; clipFrameExtractor?:(file:string,duration:number,signal?:AbortSignal)=>Promise<Buffer>; publisher?:(path:string,metadata:YoutubeMetadata)=>Promise<{videoId:string;duplicate:boolean}> } = {}) {
+export async function factoryRoutes(app: FastifyInstance, options: { storage?: ObjectStore; render?: typeof renderMedia; renderClips?: typeof renderVideoClips; probe?: (file: string, kind: string) => Promise<number>; imageGenerator?: ImageGenerator|null; lyricTranscriber?:((file:string,knownLyrics:string,duration:number,signal?:AbortSignal)=>Promise<ShortsLyricSelection|null>)|null; rhythmAnalyzer?:typeof analyzeShortsRhythm|null; clipOrderer?:ShortsClipOrderer|null; clipFrameExtractor?:(file:string,duration:number,signal?:AbortSignal)=>Promise<Buffer>; publisher?:(path:string,metadata:YoutubeMetadata)=>Promise<{videoId:string;duplicate:boolean}> } = {}) {
   const storage=options.storage ?? createObjectStore();
   const imageGenerator=options.imageGenerator===undefined?createPreferredImageGenerator():options.imageGenerator;
   const configuredImageProvider=options.imageGenerator===undefined?imageGeneratorProvider():options.imageGenerator?'Генератор образів':null;
   const lyricTranscriber=options.lyricTranscriber===undefined?(shortsTranscriptionConfigured()?transcribeShortsLyrics:null):options.lyricTranscriber;
+  const rhythmAnalyzer=options.rhythmAnalyzer===undefined?(options.render?null:analyzeShortsRhythm):options.rhythmAnalyzer;
   const clipOrderer=options.clipOrderer===undefined?createOpenAIShortsClipOrderer():options.clipOrderer;
   const extractClipFrame=options.clipFrameExtractor??(async(file,duration,signal)=>{const frame=file+'.jpg';await runMediaTool(process.env.FFMPEG_PATH||'ffmpeg',['-hide_banner','-loglevel','error','-nostdin','-y','-ss',Math.min(4,Math.max(.1,duration/2)).toFixed(3),'-i',file,'-frames:v','1','-vf','scale=320:-2','-q:v','5',frame],45000,signal);return readFile(frame);});
   const publishVideo=options.publisher??uploadPrivateVideoFile;
@@ -289,6 +290,17 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     await requirePool().query('UPDATE factory_releases SET error=NULL,updated_at=NOW() WHERE id=$1',[id]);
     return {thumbnailSet:true};
   });
+  app.post('/api/factory/releases/:id/shorts-thumbnail',{logLevel:'silent'},async(req)=>{
+    const id=uuid.parse((req.params as {id:string}).id);
+    const release=(await requirePool().query("SELECT id,title,cover_id,short_cover_id,short_video_id,short_publish_state FROM factory_releases WHERE id=$1",[id])).rows[0];
+    if(!release)throw new FactoryError(404,'Випуск не знайдено.');
+    if(release.short_publish_state!=='private'||!release.short_video_id)throw new FactoryError(409,'Спочатку Shorts має бути приватно завантажений на YouTube.');
+    const thumbnailRelease={id:release.id,title:release.title,cover_id:release.short_cover_id||release.cover_id};
+    try{await attachYoutubeThumbnail(thumbnailRelease,release.short_video_id,req.headers.cookie??'');}
+    catch(error){const message=error instanceof FactoryError?error.message:'YouTube не підтвердив обкладинку Shorts.';await requirePool().query('UPDATE factory_releases SET short_publish_error=$2,updated_at=NOW() WHERE id=$1',[id,message]);throw error;}
+    await requirePool().query('UPDATE factory_releases SET short_publish_error=NULL,updated_at=NOW() WHERE id=$1',[id]);
+    return {thumbnailSet:true};
+  });
   const deleteConfirmation=z.object({confirmation:z.literal('DELETE')}).strict();
   const checkedKey=(asset:{id:string;object_key:string})=>{
     if(asset.object_key!==`factory/${asset.id}`)throw new FactoryError(409,'Файл має невідому адресу. Видалення зупинено для безпеки.');
@@ -394,6 +406,11 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
           if(!lyricTranscriber)throw new Error('Синхронізація слів Shorts недоступна. Підключи OpenAI — ролик без правильних субтитрів не створюємо.');
           await update('lyrics',12,'Зіставляємо слова пісні з вокалом.',true);selection=await lyricTranscriber(audio,knownLyrics,Number(track.duration)||30,controller.signal);
           if(!selection?.cues?.length)throw new Error('Не вдалося точно зіставити збережені слова пісні з вокалом. Shorts без правильних субтитрів не створено.');
+        }
+        if(saved?.mode==='manual'&&rhythmAnalyzer){
+          await update('lyrics',13,'Аналізуємо ритм вибраного приспіву локально — без Whisper і без зміни слів.',true);
+          try{const pulses=await rhythmAnalyzer(audio,track.type==='audio/wav'?'wav':'mp3',selection.clipStart,selection.clipDuration,controller.signal);if(pulses.length>=4)selection={...selection,cues:alignShortsWordsToRhythm(selection.cues,pulses,selection.clipDuration)};}
+          catch(error){app.log.warn({releaseId:release.id,reason:error instanceof MediaToolError?error.reason:'analysis'},'Shorts rhythm analysis fell back to lyric timing');}
         }
         const lyricCues=selection.cues,sourceClip={start:selection.clipStart,duration:selection.clipDuration};
         await update('subtitles',14,`Створюємо один легкий шар субтитрів: 0 із ${lyricCues.length} слів.`,true);
@@ -753,8 +770,11 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
       const description=String(release.recipe?.youtubeDescription||'Original Viking song from Veil of Ages.')+'\n\nListen to the full song on Veil of Ages. #Shorts';
       const title=(release.title+' | Viking Song #Shorts').slice(0,100);
       const data=await publishVideo(file,{title,children:meta.children,synthetic:meta.synthetic,description,tags});mayHaveUploaded=true;
-      await requirePool().query("UPDATE factory_releases SET short_publish_state='private',short_video_id=$2,short_publish_error=NULL,updated_at=NOW() WHERE id=$1",[id,data.videoId]);
-      return {videoId:data.videoId};
+      let thumbnailWarning:string|null=null;
+      try{await attachYoutubeThumbnail({id:release.id,title:release.title,cover_id:release.short_cover_id||release.cover_id},data.videoId,req.headers.cookie??'');}
+      catch(error){thumbnailWarning=error instanceof FactoryError?error.message:'Shorts завантажено приватно, але YouTube не підтвердив власну обкладинку.';}
+      await requirePool().query("UPDATE factory_releases SET short_publish_state='private',short_video_id=$2,short_publish_error=$3,updated_at=NOW() WHERE id=$1",[id,data.videoId,thumbnailWarning]);
+      return {videoId:data.videoId,thumbnailSet:!thumbnailWarning,warning:thumbnailWarning};
     }catch(error){
       if(error instanceof YoutubeUploadOutcomeError)mayHaveUploaded=error.uncertain;
       if(!mayHaveUploaded){const message=error instanceof FactoryError?error.message:'Передача Shorts не почалася. Перевір підключення YouTube і повтори спробу.';await requirePool().query("UPDATE factory_releases SET short_publish_state=NULL,short_publish_error=$2,updated_at=NOW() WHERE id=$1",[id,message]);throw error instanceof FactoryError?error:new FactoryError(502,message);}

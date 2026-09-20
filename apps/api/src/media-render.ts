@@ -65,6 +65,33 @@ export async function checkMediaTools(): Promise<void> {
   await runMediaTool(process.env.FFPROBE_PATH || 'ffprobe', ['-version'], 5000);
 }
 
+export function rhythmPulsesFromAstats(value:string,duration:number):number[]{
+  const samples:Array<{time:number;db:number}>=[];let time=0;
+  for(const line of value.split(/\r?\n/)){
+    const timeMatch=/pts_time:([\d.]+)/.exec(line);if(timeMatch)time=Number(timeMatch[1]);
+    const level=/lavfi\.astats\.Overall\.RMS_level=(-?(?:\d+(?:\.\d+)?|inf))/i.exec(line);
+    if(level&&Number.isFinite(time)){const db=level[1]!.toLowerCase()==='-inf'?-120:Number(level[1]);if(Number.isFinite(db)&&time>=0&&time<duration)samples.push({time,db});}
+  }
+  if(samples.length<8)return [];
+  const levels=samples.map(sample=>sample.db).sort((a,b)=>a-b),floor=levels[Math.floor(levels.length*.35)]??-60,candidates:Array<{time:number;score:number}>=[];
+  for(let index=3;index<samples.length-1;index++){
+    const current=samples[index]!,previous=(samples[index-1]!.db+samples[index-2]!.db+samples[index-3]!.db)/3,rise=current.db-previous;
+    if(current.db<samples[index-1]!.db||current.db<samples[index+1]!.db||(rise<1.4&&current.db<floor+8))continue;
+    const score=rise+Math.max(0,current.db-floor)*.18,last=candidates.at(-1);
+    if(last&&current.time-last.time<.16){if(score>last.score)candidates[candidates.length-1]={time:current.time,score};}
+    else candidates.push({time:current.time,score});
+  }
+  return candidates.slice(0,180).map(item=>Number(item.time.toFixed(3)));
+}
+
+export async function analyzeShortsRhythm(audio:string,audioKind:string,clipStart:number,duration:number,signal?:AbortSignal):Promise<number[]>{
+  const output=await runMediaTool(process.env.FFMPEG_PATH||'ffmpeg',[
+    '-hide_banner','-loglevel','error','-nostdin','-f',audioKind,'-ss',Math.max(0,clipStart).toFixed(3),'-t',Math.max(1,duration).toFixed(3),'-i',audio,
+    '-vn','-af','aresample=8000,asetnsamples=n=400,astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-','-f','null','-'
+  ],2*60*1000,signal);
+  return rhythmPulsesFromAstats(output,duration);
+}
+
 export function buildCinematicFilters(width: number, height: number, duration: number, preset: CinematicPreset, intensity:MotionIntensity='cinematic', effects:ReadonlyArray<FactoryEffectId>=ACTIVE_EFFECT_IDS, sceneCount=1, lyricOverlays:ReadonlyArray<ShortsLyricOverlay>=[],videoLyrics=false) {
   const fadeIn = Math.min(2.5, Math.max(0.25, duration / 5));
   const fadeOut = Math.min(5, Math.max(0.5, duration / 4));

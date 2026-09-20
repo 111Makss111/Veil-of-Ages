@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { Script } from 'node:vm';
 import Fastify from 'fastify';
-import { buildCinematicFilters, MAX_OUTPUT_BYTES, mediaKind, videoKind, runMediaTool, MediaToolError, shortsClip } from './media-render.js';
+import { buildCinematicFilters, MAX_OUTPUT_BYTES, mediaKind, videoKind, runMediaTool, MediaToolError, rhythmPulsesFromAstats, shortsClip } from './media-render.js';
 import { mediaScript } from './media-ui.js';
 import { classifyMemory, reclaimableFileCache } from './memory-budget.js';
 
@@ -76,6 +76,8 @@ test('cinematic presets build bounded video and audio filter graphs', () => {
 test('Shorts selects a bounded 30-second fragment around the later musical peak',()=>{
   assert.deepEqual(shortsClip(20),{start:0,duration:20});
   assert.deepEqual(shortsClip(240),{start:117,duration:30});
+  const stats=Array.from({length:24},(_,index)=>`frame:${index} pts:${index*400} pts_time:${(index*.05).toFixed(2)}\nlavfi.astats.Overall.RMS_level=${index%4===0?-8:-28}`).join('\n');
+  const pulses=rhythmPulsesFromAstats(stats,30);assert.ok(pulses.length>=4);assert.ok(pulses.every(value=>value>=0&&value<30));
 });
 
 test('memory budget pauses work before the Render hard limit without treating it as a failed render',()=>{

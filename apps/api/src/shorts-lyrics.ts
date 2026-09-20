@@ -61,9 +61,16 @@ function alignLyrics(lyrics:LyricToken[],speech:TimedWord[]){
 function splitLine(indexes:number[],size=6){const count=Math.ceil(indexes.length/size),balanced=Math.ceil(indexes.length/count),chunks:number[][]=[];for(let i=0;i<indexes.length;i+=balanced)chunks.push(indexes.slice(i,i+balanced));return chunks;}
 
 export function buildManualShortsLyrics(knownLyrics:string,duration:number,requestedStart:number):ShortsLyricSelection|null{
-  const chorus=[...knownLyrics.replace(/\r/g,'').matchAll(/\[([^\]]+)]([\s\S]*?)(?=\[[^\]]+]|$)/g)]
-    .find(match=>match[1]!.toLowerCase().includes('chorus'))?.[2]||'';
-  const lines=chorus.split('\n').map(cleanPhrase).filter(Boolean),words=lines.flatMap(line=>line.match(/[\p{L}\p{N}][\p{L}\p{N}'’\-]*/gu)||[]).map(cleanWord).filter(Boolean).slice(0,30);
+  const source=knownLyrics.replace(/\r/g,''),sections=[...source.matchAll(/\[([^\]]+)]([\s\S]*?)(?=\[[^\]]+]|$)/g)];
+  const totalWords=Math.max(1,sections.reduce((sum,match)=>sum+(match[2]!.match(/[\p{L}\p{N}][\p{L}\p{N}'’\-]*/gu)||[]).length,0));
+  let wordOffset=0;const choruses:Array<{body:string;estimatedStart:number}>=[];
+  for(const match of sections){
+    const label=match[1]!.toLowerCase().replace(/[_–—]+/g,' ').replace(/\s+/g,' ').trim(),body=match[2]!,count=(body.match(/[\p{L}\p{N}][\p{L}\p{N}'’\-]*/gu)||[]).length;
+    if(/\bchorus\b/.test(label)&&!/(?:^|\b)(?:pre|post)[ -]?chorus\b/.test(label))choruses.push({body,estimatedStart:duration*wordOffset/totalWords});
+    wordOffset+=count;
+  }
+  const chosen=choruses.sort((a,b)=>Math.abs(a.estimatedStart-requestedStart)-Math.abs(b.estimatedStart-requestedStart))[0],chorus=chosen?.body||'';
+  const lines=chorus.split('\n').map(cleanPhrase).filter(Boolean),words=lines.flatMap(line=>line.match(/[\p{L}\p{N}][\p{L}\p{N}'’\-]*/gu)||[]).map(cleanWord).filter(Boolean).slice(0,72);
   if(lines.length<2||words.length<4||!Number.isFinite(duration)||duration<1)return null;
   const clipDuration=Math.min(30,duration),clipStart=Math.max(0,Math.min(Math.max(0,duration-clipDuration),Number(requestedStart)||0));
   const slot=clipDuration/words.length;
@@ -72,6 +79,21 @@ export function buildManualShortsLyrics(knownLyrics:string,duration:number,reque
     return {start:Number(start.toFixed(2)),end:Number(end.toFixed(2)),text:word,accent:word.toUpperCase()};
   });
   return {clipStart:Number(clipStart.toFixed(2)),clipDuration:Number(clipDuration.toFixed(2)),section:'chorus',cues};
+}
+
+export function alignShortsWordsToRhythm(cues:ReadonlyArray<ShortsLyricCue>,pulses:ReadonlyArray<number>,duration:number):ShortsLyricCue[]{
+  const words=cues.slice(0,72),beats=[...new Set(pulses.filter(value=>Number.isFinite(value)&&value>=0&&value<duration).map(value=>Number(value.toFixed(3))))].sort((a,b)=>a-b);
+  if(words.length<2||beats.length<4)return [...words];
+  const starts:number[]=[];
+  for(let index=0;index<words.length;index++){
+    const target=words.length===1?0:index*(duration-.18)/(words.length-1),nearest=beats.reduce((best,value)=>Math.abs(value-target)<Math.abs(best-target)?value:best,beats[0]!);
+    const minimum=index?starts[index-1]!+.16:0;
+    starts.push(Math.max(minimum,Math.min(duration-.08,Math.abs(nearest-target)<=.38?nearest:target)));
+  }
+  return words.map((cue,index)=>{
+    const start=starts[index]!,next=starts[index+1]??duration,end=Math.min(duration,Math.max(start+.18,next-.035));
+    return {...cue,start:Number(start.toFixed(2)),end:Number(end.toFixed(2))};
+  }).filter(cue=>cue.end>cue.start&&cue.start<duration);
 }
 
 export function selectShortsLyrics(input:TranscriptionWord[],knownLyrics:string,duration:number):ShortsLyricSelection|null{
