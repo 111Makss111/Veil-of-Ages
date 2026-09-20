@@ -1,4 +1,7 @@
 import sharp from 'sharp';
+import { writeFile } from 'node:fs/promises';
+import { basename, join } from 'node:path';
+import type { ShortsLyricCue } from './shorts-lyrics.js';
 
 // Render has a small shared memory budget. Thumbnails are one-shot work, so a
 // persistent libvips cache only competes with FFmpeg and YouTube uploads.
@@ -37,6 +40,24 @@ export async function buildKineticLyricOverlay(text:string,accent:string,index=0
   const word=escapeXml((text||accent).trim().split(/\s+/)[0]!.slice(0,28).toUpperCase()),color=index%4===1?'#f0cf78':index%4===3?'#ffffff':'#c9f39f';
   const overlay=Buffer.from(`<svg width="680" height="220" xmlns="http://www.w3.org/2000/svg"><text x="340" y="137" text-anchor="middle" fill="#020805" fill-opacity=".58" font-family="Arial, sans-serif" font-size="98" font-weight="900" letter-spacing="4" transform="translate(0 8)">${word}</text><text x="340" y="137" text-anchor="middle" fill="${color}" stroke="#020805" stroke-width="9" paint-order="stroke" stroke-linejoin="round" font-family="Arial, sans-serif" font-size="98" font-weight="900" letter-spacing="4">${word}</text><path d="M238 166 H442" stroke="${color}" stroke-width="5" stroke-linecap="round" opacity=".78"/></svg>`);
   return sharp(overlay).png({compressionLevel:9,palette:true}).toBuffer();
+}
+
+const shortsManifestFile=(name:string,duration:number)=>`file '${name.replace(/'/g,"'\\''")}'\nduration ${Math.max(.04,duration).toFixed(3)}\n`;
+export async function buildShortsLyricTrack(directory:string,cues:ReadonlyArray<ShortsLyricCue>,duration:number,onProgress?:(done:number,total:number)=>void){
+  const valid=cues.filter(cue=>Number.isFinite(cue.start)&&Number.isFinite(cue.end)&&cue.start>=0&&cue.end>cue.start&&cue.start<duration).slice(0,30);
+  if(!valid.length)return null;
+  const emptyName='shorts-lyrics-empty.png',emptyPath=join(directory,emptyName);
+  await sharp({create:{width:680,height:220,channels:4,background:{r:0,g:0,b:0,alpha:0}}}).png({compressionLevel:9,palette:true}).toFile(emptyPath);
+  let manifest='ffconcat version 1.0\n',cursor=0,lastName=emptyName;
+  for(const [index,cue] of valid.entries()){
+    const start=Math.max(cursor,Math.min(duration,cue.start)),end=Math.max(start+.04,Math.min(duration,cue.end));
+    if(start-cursor>.035)manifest+=shortsManifestFile(emptyName,start-cursor);
+    const wordName=`short-word-${String(index).padStart(3,'0')}.png`;await writeFile(join(directory,wordName),await buildKineticLyricOverlay(cue.text,cue.accent,index));manifest+=shortsManifestFile(wordName,end-start);
+    cursor=end;lastName=wordName;onProgress?.(index+1,valid.length);
+  }
+  if(duration-cursor>.035){manifest+=shortsManifestFile(emptyName,duration-cursor);lastName=emptyName;}
+  manifest+=`file '${basename(lastName)}'\n`;
+  const manifestPath=join(directory,'shorts-lyrics.ffconcat');await writeFile(manifestPath,manifest,'utf8');return {manifestPath,cueCount:valid.length};
 }
 
 function lyricLines(value:string){

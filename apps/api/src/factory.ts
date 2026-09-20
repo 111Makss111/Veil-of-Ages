@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { requirePool } from './db.js';
 import { ownerOrigin } from './owner-auth.js';
-import { mediaKind, videoKind, renderMedia, renderVideoClips, runMediaTool, checkMediaTools, MAX_OUTPUT_BYTES, MediaToolError, type ShortsLyricOverlay } from './media-render.js';
+import { mediaKind, videoKind, renderMedia, renderVideoClips, runMediaTool, checkMediaTools, MAX_OUTPUT_BYTES, MediaToolError } from './media-render.js';
 import { createObjectStore, STORAGE_LIMIT, INPUT_LIMIT, type ObjectStore } from './factory-storage.js';
 import { FactoryError, reserveAsset, startRelease, factoryLock, capacity } from './factory-store.js';
 import { factoryPage, factoryCss, factoryScript } from './factory-ui.js';
@@ -18,7 +18,7 @@ import { createShortsStoryPlan, createPreferredImageGenerator, imageGeneratorPro
 import { ACTIVE_EFFECT_IDS, EFFECT_CATALOG, motionIntensitySchema } from './factory-effects.js';
 import { approveSongIdea, createSongIdea, textGeneratorConfigured, textGeneratorProvider } from './factory-song.js';
 import { songMode, songPackageSchema } from './factory-song-domain.js';
-import { buildKineticLyricOverlay, buildShortsArtwork, buildYoutubeThumbnail } from './factory-thumbnail.js';
+import { buildShortsArtwork, buildShortsLyricTrack, buildYoutubeThumbnail } from './factory-thumbnail.js';
 import { buildManualShortsLyrics, shortsTranscriptionConfigured, transcribeShortsLyrics, type ShortsLyricSelection } from './shorts-lyrics.js';
 import { waitForMemory } from './memory-budget.js';
 import { uploadPrivateVideoFile, YoutubeUploadOutcomeError, type Metadata as YoutubeMetadata } from './youtube-upload.js';
@@ -371,10 +371,9 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
           progress(3);selection=await lyricTranscriber(audio,knownLyrics,Number(track.duration)||30,controller.signal);
           if(!selection?.cues?.length)throw new Error('Не вдалося точно зіставити збережені слова пісні з вокалом. Shorts без правильних субтитрів не створено.');
         }
-        const lyricCues=selection.cues,sourceClip={start:selection.clipStart,duration:selection.clipDuration},lyricOverlays:ShortsLyricOverlay[]=[];
-        for(const [index,cue] of lyricCues.entries()){
-          const path=join(dir,`lyric-${index}.png`),overlay=await buildKineticLyricOverlay(cue.text,cue.accent,index);await writeFile(path,overlay);lyricOverlays.push({path,start:cue.start,end:cue.end});
-        }
+        const lyricCues=selection.cues,sourceClip={start:selection.clipStart,duration:selection.clipDuration};
+        const lyricTrack=await buildShortsLyricTrack(dir,lyricCues,selection.clipDuration,(done,total)=>progress(5+done/total*15));
+        if(!lyricTrack)throw new Error('Не вдалося підготувати текстовий шар Shorts.');
         const plan={...(release.short_plan||{}),kineticText:{mode:saved?.mode==='manual'?'manual':'transcribed',cues:lyricCues,clipStart:selection.clipStart,clipDuration:selection.clipDuration,section:selection.section}};
         release.short_plan=plan;await requirePool().query('UPDATE factory_releases SET short_plan=$2,short_updated_at=NOW() WHERE id=$1',[release.id,JSON.stringify(plan)]);
         const manualClips=(await requirePool().query(`SELECT c.position,a.object_key,a.state,a.duration
@@ -384,7 +383,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
           const clipFiles:string[]=[];
           for(const [index,clip] of manualClips.entries()){const path=join(dir,`manual-${index}.mp4`);await storageToFile(s,clip.object_key,path,UPLOAD_MAX);clipFiles.push(path);progress(5+index*5);}
           await waitForMemory(controller.signal,budget=>app.log.warn({operation:'manual-shorts',memoryPercent:Math.round(budget.ratio*100)},'Factory waits at a safe memory checkpoint'));
-          await (options.renderClips??renderVideoClips)(clipFiles,manualClips.map(clip=>Number(clip.duration)||1),audio,video,track.type==='audio/wav'?'wav':'mp3',controller.signal,p=>progress(30+p.percent*.62),lyricOverlays,sourceClip);
+          await (options.renderClips??renderVideoClips)(clipFiles,manualClips.map(clip=>Number(clip.duration)||1),audio,video,track.type==='audio/wav'?'wav':'mp3',controller.signal,p=>progress(30+p.percent*.62),[],sourceClip,lyricTrack);
           const size=(await stat(video)).size;progress(94);await waitForMemory(controller.signal,budget=>app.log.warn({operation:'manual-shorts-upload',memoryPercent:Math.round(budget.ratio*100)},'Factory waits at a safe memory checkpoint'));await fileToStorage(s,output.object_key,video,'video/mp4');
           await factoryLock(async db=>{await db.query("UPDATE factory_assets SET state='ready',bytes=$2 WHERE id=$1",[output.id,size]);await db.query("UPDATE factory_releases SET short_state='review',short_progress=100,short_error=NULL,short_updated_at=NOW() WHERE id=$1 AND short_state='rendering'",[release.id]);});
           return;
@@ -393,7 +392,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
         await writeFile(image,await buildShortsArtwork(artworkData,release.title));progress(25);
         await waitForMemory(controller.signal,budget=>app.log.warn({operation:'shorts',memoryPercent:Math.round(budget.ratio*100)},'Factory waits at a safe memory checkpoint'));
         const shortEffects=ACTIVE_EFFECT_IDS.filter(id=>id!=='story.three-scenes'&&id!=='transition.scene-crossfades');
-        await (options.render??renderMedia)(image,audio,video,track.type==='audio/wav'?'wav':'mp3',controller.signal,'shorts',release.recipe.visualPreset,p=>progress(30+p.percent*.62),'expressive',shortEffects,lyricOverlays,null,sourceClip);
+        await (options.render??renderMedia)(image,audio,video,track.type==='audio/wav'?'wav':'mp3',controller.signal,'shorts',release.recipe.visualPreset,p=>progress(30+p.percent*.62),'expressive',shortEffects,[],lyricTrack,sourceClip);
         const size=(await stat(video)).size;if(size>SHORTS_MAX_BYTES)throw Error('Shorts exceeds reservation');
         progress(94);await waitForMemory(controller.signal,budget=>app.log.warn({operation:'shorts-upload',memoryPercent:Math.round(budget.ratio*100)},'Factory waits at a safe memory checkpoint'));await fileToStorage(s,output.object_key,video,'video/mp4');
         await factoryLock(async db=>{await db.query("UPDATE factory_assets SET state='ready',bytes=$2 WHERE id=$1",[output.id,size]);await db.query("UPDATE factory_releases SET short_state='review',short_progress=100,short_error=NULL,short_updated_at=NOW() WHERE id=$1 AND short_state='rendering'",[release.id]);});

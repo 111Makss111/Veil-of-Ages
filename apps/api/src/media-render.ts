@@ -135,7 +135,8 @@ export function buildCinematicFilters(width: number, height: number, duration: n
   if(videoLyrics){
     const input=count+lyricOverlays.length;
     video.push(`[${input}:v]fps=24,setpts=PTS-STARTPTS,format=rgba[lyrictrack]`);
-    video.push(`[${composed}][lyrictrack]overlay=x=0:y=0:eof_action=pass:shortest=0[lyricvideo]`);
+    const lyricPosition=height>width?"x='(main_w-overlay_w)/2+8*sin(t*5)':y='530-10*sin(t*7)'":'x=0:y=0';
+    video.push(`[${composed}][lyrictrack]overlay=${lyricPosition}:eof_action=pass:shortest=0[lyricvideo]`);
     composed='lyricvideo';
   }
   const finish:string[]=[];
@@ -172,8 +173,8 @@ export async function renderMedia(image: string|string[], audio: string, output:
   clip.duration=Math.min(clip.duration,duration-clip.start);
   const renderDuration = clip.duration;
   const captions=format==='shorts'?lyricOverlays.filter(cue=>Number.isFinite(cue.start)&&Number.isFinite(cue.end)&&cue.start>=0&&cue.end>cue.start&&cue.start<renderDuration).slice(0,30):[];
-  const fullLyrics=format==='video'&&!!videoLyricTrack;
-  const filters = buildCinematicFilters(targetWidth, targetHeight, renderDuration, preset,intensity,effects,images.length,captions,fullLyrics);
+  const timedLyrics=!!videoLyricTrack;
+  const filters = buildCinematicFilters(targetWidth, targetHeight, renderDuration, preset,intensity,effects,images.length,captions,timedLyrics);
   let progressBuffer='';
   const parseProgress=(chunk:string)=>{
     progressBuffer+=chunk;
@@ -185,7 +186,7 @@ export async function renderMedia(image: string|string[], audio: string, output:
   };
   const imageInputs=images.flatMap(pictureFile=>['-protocol_whitelist','file,pipe','-f','image2','-loop','1','-framerate','24','-i',pictureFile]);
   const lyricInputs=captions.flatMap(cue=>['-protocol_whitelist','file,pipe','-f','image2','-loop','1','-framerate','24','-i',cue.path]);
-  const videoLyricInput=fullLyrics?['-protocol_whitelist','file,pipe','-f','concat','-safe','0','-i',videoLyricTrack!.manifestPath]:[];
+  const videoLyricInput=timedLyrics?['-protocol_whitelist','file,pipe','-f','concat','-safe','0','-i',videoLyricTrack!.manifestPath]:[];
   const useNvenc=process.env.LOCAL_VIDEO_ENCODER==='h264_nvenc',threads=String(Math.max(1,Math.min(8,Number(process.env.MEDIA_THREADS)||1)));
   const videoCodec=useNvenc?['-c:v','h264_nvenc','-preset','p4','-tune','hq','-rc','vbr','-cq','23','-b:v','0','-maxrate','900k','-bufsize','1800k']:['-c:v','libx264','-threads',threads,'-preset','superfast','-crf','22','-maxrate','900k','-bufsize','1800k'];
   await runMediaTool(process.env.FFMPEG_PATH || 'ffmpeg', [
@@ -210,7 +211,7 @@ export async function renderMedia(image: string|string[], audio: string, output:
  * prompt remains visible in the finished 30-second story. Each input is
  * scaled/cropped in the stream, so Render does not hold decoded clips in memory.
  */
-export async function renderVideoClips(clips: string[], clipDurations: number[], audio: string, output: string, audioKind: string, signal?: AbortSignal, onProgress?: (progress: MediaProgress) => void,lyricOverlays:ReadonlyArray<ShortsLyricOverlay>=[],sourceClip?:{start:number;duration:number}): Promise<void> {
+export async function renderVideoClips(clips: string[], clipDurations: number[], audio: string, output: string, audioKind: string, signal?: AbortSignal, onProgress?: (progress: MediaProgress) => void,lyricOverlays:ReadonlyArray<ShortsLyricOverlay>=[],sourceClip?:{start:number;duration:number},videoLyricTrack?:VideoLyricTrack|null): Promise<void> {
   if (clips.length < 1 || clips.length > 6 || clips.length !== clipDurations.length) throw new Error('Потрібно від одного до шести відеофрагментів.');
   const probe = process.env.FFPROBE_PATH || 'ffprobe';
   const common = ['-v', 'error', '-max_alloc', '67108864', '-protocol_whitelist', 'file,pipe'];
@@ -235,8 +236,9 @@ export async function renderVideoClips(clips: string[], clipDurations: number[],
   const captions=lyricOverlays.filter(cue=>Number.isFinite(cue.start)&&Number.isFinite(cue.end)&&cue.start>=0&&cue.end>cue.start&&cue.start<clipWindow).slice(0,30);
   let composed='story';
   captions.forEach((cue,index)=>{const input=sequence.length+index,next=`captioned${index}`,direction=index%2===0?-85:85,start=cue.start.toFixed(3),end=cue.end.toFixed(3),span=Math.max(.1,cue.end-cue.start).toFixed(3);filters.push(`[${input}:v]format=rgba[caption${index}]`);filters.push(`[${composed}][caption${index}]overlay=x='(main_w-overlay_w)/2+if(lt(t,${start}+.18),(${start}+.18-t)*${direction},0)':y='530-12*sin((t-${start})*PI/${span})':enable='between(t,${start},${end})':eof_action=pass[${next}]`);composed=next;});
+  if(videoLyricTrack){const input=sequence.length+captions.length;filters.push(`[${input}:v]fps=24,setpts=PTS-STARTPTS,format=rgba[lyrictrack]`);filters.push(`[${composed}][lyrictrack]overlay=x='(main_w-overlay_w)/2+8*sin(t*5)':y='530-10*sin(t*7)':eof_action=pass:shortest=0[lyricvideo]`);composed='lyricvideo';}
   filters.push(`[${composed}]null[vout]`);
-  const audioInputIndex = sequence.length+captions.length;
+  const audioInputIndex = sequence.length+captions.length+(videoLyricTrack?1:0);
   filters.push(`[${audioInputIndex}:a]aresample=48000,afade=t=in:st=0:d=${Math.min(1.5,clipWindow / 5).toFixed(3)},afade=t=out:st=${Math.max(0,clipWindow - Math.min(2,clipWindow / 4)).toFixed(3)}:d=${Math.min(2,clipWindow / 4).toFixed(3)}[aout]`);
   let progressBuffer = '';
   const parseProgress = (chunk: string) => {
@@ -245,12 +247,13 @@ export async function renderVideoClips(clips: string[], clipDurations: number[],
   };
   const inputArgs = sequence.flatMap(segment => ['-protocol_whitelist', 'file,pipe', '-i', clips[segment.index]!]);
   const lyricInputs=captions.flatMap(cue=>['-protocol_whitelist','file,pipe','-f','image2','-loop','1','-framerate','24','-i',cue.path]);
+  const videoLyricInput=videoLyricTrack?['-protocol_whitelist','file,pipe','-f','concat','-safe','0','-i',videoLyricTrack.manifestPath]:[];
   const useNvenc = process.env.LOCAL_VIDEO_ENCODER === 'h264_nvenc';
   const threads = String(Math.max(1, Math.min(8, Number(process.env.MEDIA_THREADS) || 1)));
   const videoCodec = useNvenc ? ['-c:v', 'h264_nvenc', '-preset', 'p4', '-tune', 'hq', '-rc', 'vbr', '-cq', '23', '-b:v', '0', '-maxrate', '900k', '-bufsize', '1800k'] : ['-c:v', 'libx264', '-threads', threads, '-preset', 'superfast', '-crf', '22', '-maxrate', '900k', '-bufsize', '1800k'];
   await runMediaTool(process.env.FFMPEG_PATH || 'ffmpeg', [
     '-hide_banner', '-loglevel', 'error', '-nostdin', '-n', '-max_alloc', '67108864', '-filter_threads', '1', '-filter_complex_threads', '1',
-    ...inputArgs,...lyricInputs, '-protocol_whitelist', 'file,pipe', '-f', audioKind, ...(clipStart>0?['-ss',clipStart.toFixed(3)]:[]), '-i', audio,
+    ...inputArgs,...lyricInputs,...videoLyricInput, '-protocol_whitelist', 'file,pipe', '-f', audioKind, ...(clipStart>0?['-ss',clipStart.toFixed(3)]:[]), '-i', audio,
     '-filter_complex', filters.join(';'), '-map', '[vout]', '-map', '[aout]', '-map_metadata', '-1', ...videoCodec, '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-t', String(clipWindow), '-shortest', '-fs', String(MAX_OUTPUT_BYTES), '-movflags', '+faststart', '-progress', 'pipe:1', '-nostats', output
   ], 90 * 60 * 1000, signal, parseProgress, 5 * 60 * 1000);
   const result = JSON.parse(await runMediaTool(probe, [...common, '-show_entries', 'format=duration:stream=codec_type,width,height', '-of', 'json', output], 15000, signal));
