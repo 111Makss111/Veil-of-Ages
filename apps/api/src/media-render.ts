@@ -128,7 +128,8 @@ export function buildCinematicFilters(width: number, height: number, duration: n
   for(const [index,cue] of lyricOverlays.entries()){
     const input=count+index,next=`captioned${index}`;
     video.push(`[${input}:v]format=rgba[caption${index}]`);
-    video.push(`[${composed}][caption${index}]overlay=x='(main_w-overlay_w)/2':y=650:enable='between(t,${cue.start.toFixed(3)},${cue.end.toFixed(3)})':eof_action=pass[${next}]`);
+    const direction=index%2===0?-85:85,start=cue.start.toFixed(3),end=cue.end.toFixed(3),span=Math.max(.1,cue.end-cue.start).toFixed(3);
+    video.push(`[${composed}][caption${index}]overlay=x='(main_w-overlay_w)/2+if(lt(t,${start}+.18),(${start}+.18-t)*${direction},0)':y='530-12*sin((t-${start})*PI/${span})':enable='between(t,${start},${end})':eof_action=pass[${next}]`);
     composed=next;
   }
   if(videoLyrics){
@@ -170,7 +171,7 @@ export async function renderMedia(image: string|string[], audio: string, output:
   const clip={start:Math.max(0,Math.min(duration-1,Number(requested.start)||0)),duration:Math.min(duration,Math.max(1,Number(requested.duration)||duration))};
   clip.duration=Math.min(clip.duration,duration-clip.start);
   const renderDuration = clip.duration;
-  const captions=format==='shorts'?lyricOverlays.filter(cue=>Number.isFinite(cue.start)&&Number.isFinite(cue.end)&&cue.start>=0&&cue.end>cue.start&&cue.start<renderDuration).slice(0,12):[];
+  const captions=format==='shorts'?lyricOverlays.filter(cue=>Number.isFinite(cue.start)&&Number.isFinite(cue.end)&&cue.start>=0&&cue.end>cue.start&&cue.start<renderDuration).slice(0,30):[];
   const fullLyrics=format==='video'&&!!videoLyricTrack;
   const filters = buildCinematicFilters(targetWidth, targetHeight, renderDuration, preset,intensity,effects,images.length,captions,fullLyrics);
   let progressBuffer='';
@@ -231,9 +232,9 @@ export async function renderVideoClips(clips: string[], clipDurations: number[],
   if (!sequence.length) throw new Error('Відеофрагменти порожні.');
   const filters = sequence.map((segment, index) => `[${index}:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1,fps=24,tpad=stop_mode=clone:stop_duration=${segment.duration.toFixed(3)},trim=duration=${segment.duration.toFixed(3)},setpts=PTS-STARTPTS,format=yuv420p[v${index}]`);
   filters.push(sequence.map((_segment, index) => `[v${index}]`).join('') + `concat=n=${sequence.length}:v=1:a=0[story]`);
-  const captions=lyricOverlays.filter(cue=>Number.isFinite(cue.start)&&Number.isFinite(cue.end)&&cue.start>=0&&cue.end>cue.start&&cue.start<clipWindow).slice(0,18);
+  const captions=lyricOverlays.filter(cue=>Number.isFinite(cue.start)&&Number.isFinite(cue.end)&&cue.start>=0&&cue.end>cue.start&&cue.start<clipWindow).slice(0,30);
   let composed='story';
-  captions.forEach((cue,index)=>{const input=sequence.length+index,next=`captioned${index}`;filters.push(`[${input}:v]format=rgba[caption${index}]`);filters.push(`[${composed}][caption${index}]overlay=x='(main_w-overlay_w)/2':y=650:enable='between(t,${cue.start.toFixed(3)},${cue.end.toFixed(3)})':eof_action=pass[${next}]`);composed=next;});
+  captions.forEach((cue,index)=>{const input=sequence.length+index,next=`captioned${index}`,direction=index%2===0?-85:85,start=cue.start.toFixed(3),end=cue.end.toFixed(3),span=Math.max(.1,cue.end-cue.start).toFixed(3);filters.push(`[${input}:v]format=rgba[caption${index}]`);filters.push(`[${composed}][caption${index}]overlay=x='(main_w-overlay_w)/2+if(lt(t,${start}+.18),(${start}+.18-t)*${direction},0)':y='530-12*sin((t-${start})*PI/${span})':enable='between(t,${start},${end})':eof_action=pass[${next}]`);composed=next;});
   filters.push(`[${composed}]null[vout]`);
   const audioInputIndex = sequence.length+captions.length;
   filters.push(`[${audioInputIndex}:a]aresample=48000,afade=t=in:st=0:d=${Math.min(1.5,clipWindow / 5).toFixed(3)},afade=t=out:st=${Math.max(0,clipWindow - Math.min(2,clipWindow / 4)).toFixed(3)}:d=${Math.min(2,clipWindow / 4).toFixed(3)}[aout]`);

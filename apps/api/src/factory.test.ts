@@ -34,7 +34,7 @@ test('factory browser script parses and storage fails closed without configurati
   assert.match(factoryScript,/Показати 6 компактних відеопромптів/);
   assert.match(factoryScript,/Підготувати 6 промптів/);
   assert.match(factoryScript,/Порядок назв неважливий/);
-  assert.match(factoryScript,/Взяти поточний час/);
+  assert.match(factoryScript,/Зафіксувати цей час/);
   assert.match(factoryScript,/chorusStart:timing\.value\(\)/);
   assert.doesNotMatch(factoryScript,/Потрібне підключення OpenAI для точної синхронізації/);
   assert.match(factoryScript,/Завантажити повне відео приватно на YouTube/);
@@ -132,7 +132,7 @@ test('factory composes a vertical branded Shorts frame',async()=>{
   assert.equal(metadata.width,720);assert.equal(metadata.height,1280);assert.equal(metadata.format,'jpeg');
   const opening=await buildShortsStoryArtwork(source,'The Bell Beneath the Ice',0,'They returned without the final longship');const openingMetadata=await sharp(opening).metadata();assert.equal(openingMetadata.width,720);assert.equal(openingMetadata.height,1280);
   const middle=await buildShortsStoryArtwork(source,'The Bell Beneath the Ice',1,'Unused hook');assert.equal((await sharp(middle).metadata()).height,1280);
-  const kinetic=await buildKineticLyricOverlay('We carry the northern fire','fire',1),kineticMetadata=await sharp(kinetic).metadata();assert.equal(kineticMetadata.width,680);assert.equal(kineticMetadata.height,300);assert.equal(kineticMetadata.format,'png');
+  const kinetic=await buildKineticLyricOverlay('fire','fire',1),kineticMetadata=await sharp(kinetic).metadata();assert.equal(kineticMetadata.width,680);assert.equal(kineticMetadata.height,220);assert.equal(kineticMetadata.format,'png');
 });
 
 test('factory groups timestamped vocal words into bounded kinetic phrases',()=>{
@@ -147,7 +147,7 @@ test('factory groups timestamped vocal words into bounded kinetic phrases',()=>{
   ],'[Chorus]\nStand my ground when the wolves attack',120);
   assert.equal(aligned?.section,'chorus');assert.equal(aligned?.cues[0]?.text,'Stand my ground when');assert.equal(aligned?.cues[1]?.text,'the wolves attack');assert.ok((aligned?.clipStart||0)>0);
   const manual=buildManualShortsLyrics('[Verse]\nCold road\n[Chorus]\nStand my ground\nWhen the wolves attack\nCarry the fire\nWe are coming back',120,46.5);
-  assert.equal(manual?.clipStart,46.5);assert.equal(manual?.clipDuration,30);assert.equal(manual?.section,'chorus');assert.equal(manual?.cues.length,4);assert.equal(manual?.cues[0]?.text,'Stand my ground');assert.equal(manual?.cues.at(-1)?.end,30);
+  assert.equal(manual?.clipStart,46.5);assert.equal(manual?.clipDuration,30);assert.equal(manual?.section,'chorus');assert.equal(manual?.cues.length,14);assert.equal(manual?.cues[0]?.text,'Stand');assert.equal(manual?.cues[1]?.text,'my');assert.ok((manual?.cues.at(-1)?.end||30)<=30);
 });
 
 test('factory: durable library, quotas, duplicates, reservation, retry, review and private upload',async()=>{
@@ -213,6 +213,7 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
     await waitState(id,'review');assert.equal(renders,2);assert.equal(generated,1);assert.equal(renderPresets.length,2);assert.deepEqual(renderSceneCounts,[1,1]);
     const release=(await q('SELECT * FROM factory_releases WHERE id=$1',[id])).rows[0] as {title:string;track_id:string;output_id:string;progress:number;stage:string;recipe:{coverMode:string;prompt:string;motionIntensity:string;productionPlan:{version:number;source:string;sceneCount:number;effects:string[]}}};assert.equal(release.track_id,audio.json().id);assert.equal(release.recipe.coverMode,'ai');assert.match(release.recipe.prompt,/Viking/);assert.equal(release.recipe.motionIntensity,'cinematic');assert.equal(release.recipe.productionPlan.version,2);assert.equal(release.recipe.productionPlan.sceneCount,1);assert.equal(release.recipe.productionPlan.source,'baseline-rules');assert.deepEqual(release.recipe.productionPlan.effects,['look.dark-fantasy-grade','framing.vignette','transition.soft-fades','audio.loudness-master']);assert.equal(release.progress,100);assert.equal(release.stage,'complete');
     assert.equal((await app.inject('/api/factory/assets/'+release.output_id+'/file')).statusCode,200);
+    const seekable=await app.inject({method:'GET',url:'/api/factory/assets/'+release.output_id+'/file',headers:{range:'bytes=4-11'}});assert.equal(seekable.statusCode,206);assert.equal(seekable.headers['accept-ranges'],'bytes');assert.match(seekable.headers['content-range']||'',/^bytes 4-11\//);assert.equal(seekable.rawPayload.length,8);
     assert.equal((await post('/api/factory/assets/'+release.output_id+'/delete',{confirmation:'DELETE'})).statusCode,409);
     authorized=false;assert.equal((await app.inject('/api/factory/assets/'+release.output_id+'/file')).statusCode,401);authorized=true;
     assert.equal((await post('/api/factory/releases/'+id+'/publish',{children:'no',synthetic:'yes',rights:false})).statusCode,400);assert.equal(published,0);

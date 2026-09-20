@@ -34,9 +34,8 @@ export async function buildShortsStoryArtwork(image:Buffer,title:string,position
 }
 
 export async function buildKineticLyricOverlay(text:string,accent:string,index=0){
-  const phrase=lines(text).slice(0,2),spans=phrase.map((line,lineIndex)=>`<tspan x="340" dy="${lineIndex?47:0}">${escapeXml(line)}</tspan>`).join('');
-  const color=index%3===1?'#e0c47d':'#c6ed9f',safeAccent=escapeXml(accent.slice(0,28));
-  const overlay=Buffer.from(`<svg width="680" height="300" xmlns="http://www.w3.org/2000/svg"><rect x="18" y="18" width="644" height="264" rx="28" fill="#06100b" fill-opacity=".72" stroke="#d8efc2" stroke-opacity=".2"/><text x="340" y="112" text-anchor="middle" fill="${color}" stroke="#06100b" stroke-width="3" paint-order="stroke" font-family="Arial, sans-serif" font-size="68" font-weight="900" letter-spacing="2">${safeAccent}</text><text x="340" y="187" text-anchor="middle" fill="#fff" stroke="#06100b" stroke-width="3" paint-order="stroke" font-family="Arial, sans-serif" font-size="36" font-weight="800">${spans}</text></svg>`);
+  const word=escapeXml((text||accent).trim().split(/\s+/)[0]!.slice(0,28).toUpperCase()),color=index%4===1?'#f0cf78':index%4===3?'#ffffff':'#c9f39f';
+  const overlay=Buffer.from(`<svg width="680" height="220" xmlns="http://www.w3.org/2000/svg"><text x="340" y="137" text-anchor="middle" fill="#020805" fill-opacity=".58" font-family="Arial, sans-serif" font-size="98" font-weight="900" letter-spacing="4" transform="translate(0 8)">${word}</text><text x="340" y="137" text-anchor="middle" fill="${color}" stroke="#020805" stroke-width="9" paint-order="stroke" stroke-linejoin="round" font-family="Arial, sans-serif" font-size="98" font-weight="900" letter-spacing="4">${word}</text><path d="M238 166 H442" stroke="${color}" stroke-width="5" stroke-linecap="round" opacity=".78"/></svg>`);
   return sharp(overlay).png({compressionLevel:9,palette:true}).toBuffer();
 }
 

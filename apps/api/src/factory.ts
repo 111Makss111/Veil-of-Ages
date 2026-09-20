@@ -248,7 +248,9 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     const id=uuid.parse((req.params as {id:string}).id);const a=(await requirePool().query("SELECT * FROM factory_assets WHERE id=$1 AND state='ready'",[id])).rows[0];
     if(!a)throw new FactoryError(404,'Файл ще не готовий.');
     const data=await needStorage().get(a.object_key,a.kind==='video'?MAX_OUTPUT_BYTES:UPLOAD_MAX);
-    return reply.type(a.type).header('Content-Disposition','inline').send(data);
+    const range=String(req.headers.range||''),match=/^bytes=(\d*)-(\d*)$/.exec(range);reply.header('Accept-Ranges','bytes').header('Content-Disposition','inline');
+    if(match){const total=data.length,suffix=match[1]==='',requestedStart=suffix?Math.max(0,total-Number(match[2]||0)):Number(match[1]),requestedEnd=suffix?total-1:match[2]?Number(match[2]):total-1,start=Math.max(0,Math.min(total-1,requestedStart)),end=Math.max(start,Math.min(total-1,requestedEnd));if(!Number.isFinite(start)||!Number.isFinite(end)||requestedStart>=total)return reply.code(416).header('Content-Range',`bytes */${total}`).send();const chunk=data.subarray(start,end+1);return reply.code(206).type(a.type).header('Content-Range',`bytes ${start}-${end}/${total}`).header('Content-Length',String(chunk.length)).send(chunk);}
+    return reply.type(a.type).header('Content-Length',String(data.length)).send(data);
   });
   app.get('/api/factory/releases/:id/thumbnail',{logLevel:'silent'},async(req,reply)=>{
     const id=uuid.parse((req.params as {id:string}).id),release=(await requirePool().query('SELECT id,title,cover_id FROM factory_releases WHERE id=$1',[id])).rows[0];
@@ -390,8 +392,8 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
         const image=join(dir,'shorts-cover.jpg'),artworkData=await s.get(cover.object_key,8*1024*1024);
         await writeFile(image,await buildShortsArtwork(artworkData,release.title));progress(25);
         await waitForMemory(controller.signal,budget=>app.log.warn({operation:'shorts',memoryPercent:Math.round(budget.ratio*100)},'Factory waits at a safe memory checkpoint'));
-        const shortEffects=ACTIVE_EFFECT_IDS.filter(id=>id!=='story.three-scenes'&&id!=='transition.scene-crossfades'&&id!=='camera.center-push');
-        await (options.render??renderMedia)(image,audio,video,track.type==='audio/wav'?'wav':'mp3',controller.signal,'shorts',release.recipe.visualPreset,p=>progress(30+p.percent*.62),'cinematic',shortEffects,lyricOverlays,null,sourceClip);
+        const shortEffects=ACTIVE_EFFECT_IDS.filter(id=>id!=='story.three-scenes'&&id!=='transition.scene-crossfades');
+        await (options.render??renderMedia)(image,audio,video,track.type==='audio/wav'?'wav':'mp3',controller.signal,'shorts',release.recipe.visualPreset,p=>progress(30+p.percent*.62),'expressive',shortEffects,lyricOverlays,null,sourceClip);
         const size=(await stat(video)).size;if(size>SHORTS_MAX_BYTES)throw Error('Shorts exceeds reservation');
         progress(94);await waitForMemory(controller.signal,budget=>app.log.warn({operation:'shorts-upload',memoryPercent:Math.round(budget.ratio*100)},'Factory waits at a safe memory checkpoint'));await fileToStorage(s,output.object_key,video,'video/mp4');
         await factoryLock(async db=>{await db.query("UPDATE factory_assets SET state='ready',bytes=$2 WHERE id=$1",[output.id,size]);await db.query("UPDATE factory_releases SET short_state='review',short_progress=100,short_error=NULL,short_updated_at=NOW() WHERE id=$1 AND short_state='rendering'",[release.id]);});
