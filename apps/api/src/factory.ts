@@ -280,6 +280,14 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     const data=result.json() as {error?:string};
     if(result.statusCode!==200)throw new FactoryError(result.statusCode===502?502:409,data.error||'YouTube не підтвердив власну обкладинку.');
   };
+  const attachShortsYoutubeThumbnail=async(release:{id:string;title:string;cover_id:string},videoId:string,cookie:string)=>{
+    const cover=(await requirePool().query("SELECT object_key FROM factory_assets WHERE id=$1 AND kind='image' AND state='ready'",[release.cover_id])).rows[0];
+    if(!cover)throw new FactoryError(409,'Обкладинка Shorts не знайдена.');
+    const source=await needStorage().get(cover.object_key,8*1024*1024),thumbnail=await buildShortsArtwork(source,release.title);
+    const result=await app.inject({method:'POST',url:'/youtube/thumbnail?'+new URLSearchParams({videoId}),headers:{cookie,origin:ownerOrigin(),'content-type':'image/jpeg'},payload:thumbnail});
+    const data=result.json() as {error?:string};
+    if(result.statusCode!==200)throw new FactoryError(result.statusCode===502?502:409,data.error||'YouTube не підтвердив вертикальну обкладинку Shorts.');
+  };
   app.post('/api/factory/releases/:id/thumbnail',{logLevel:'silent'},async(req)=>{
     const id=uuid.parse((req.params as {id:string}).id);
     const release=(await requirePool().query("SELECT id,title,cover_id,video_id,state FROM factory_releases WHERE id=$1",[id])).rows[0];
@@ -296,7 +304,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
     if(!release)throw new FactoryError(404,'Випуск не знайдено.');
     if(release.short_publish_state!=='private'||!release.short_video_id)throw new FactoryError(409,'Спочатку Shorts має бути приватно завантажений на YouTube.');
     const thumbnailRelease={id:release.id,title:release.title,cover_id:release.short_cover_id||release.cover_id};
-    try{await attachYoutubeThumbnail(thumbnailRelease,release.short_video_id,req.headers.cookie??'');}
+    try{await attachShortsYoutubeThumbnail(thumbnailRelease,release.short_video_id,req.headers.cookie??'');}
     catch(error){const message=error instanceof FactoryError?error.message:'YouTube не підтвердив обкладинку Shorts.';await requirePool().query('UPDATE factory_releases SET short_publish_error=$2,updated_at=NOW() WHERE id=$1',[id,message]);throw error;}
     await requirePool().query('UPDATE factory_releases SET short_publish_error=NULL,updated_at=NOW() WHERE id=$1',[id]);
     return {thumbnailSet:true};
@@ -771,7 +779,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
       const title=(release.title+' | Viking Song #Shorts').slice(0,100);
       const data=await publishVideo(file,{title,children:meta.children,synthetic:meta.synthetic,description,tags});mayHaveUploaded=true;
       let thumbnailWarning:string|null=null;
-      try{await attachYoutubeThumbnail({id:release.id,title:release.title,cover_id:release.short_cover_id||release.cover_id},data.videoId,req.headers.cookie??'');}
+      try{await attachShortsYoutubeThumbnail({id:release.id,title:release.title,cover_id:release.short_cover_id||release.cover_id},data.videoId,req.headers.cookie??'');}
       catch(error){thumbnailWarning=error instanceof FactoryError?error.message:'Shorts завантажено приватно, але YouTube не підтвердив власну обкладинку.';}
       await requirePool().query("UPDATE factory_releases SET short_publish_state='private',short_video_id=$2,short_publish_error=$3,updated_at=NOW() WHERE id=$1",[id,data.videoId,thumbnailWarning]);
       return {videoId:data.videoId,thumbnailSet:!thumbnailWarning,warning:thumbnailWarning};
