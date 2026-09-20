@@ -15,7 +15,7 @@ const { chooseVisualPreset, factoryMigration, reserveAsset }=await import('./fac
 const { buildReleaseConcept,buildShortsConcept,buildShortsStoryPlan,buildOpenAIShortsStoryRequest }=await import('./factory-ai.js');
 const { factorySongMigration }=await import('./factory-song.js');
 const { buildYoutubeThumbnail,buildShortsArtwork,buildShortsStoryArtwork,buildKineticLyricOverlay,buildVideoLyricFrame }=await import('./factory-thumbnail.js');
-const { buildShortsLyricCues,buildStoryCaptionCues }=await import('./shorts-lyrics.js');
+const { buildShortsLyricCues,selectShortsLyrics }=await import('./shorts-lyrics.js');
 const { buildVideoLyricCues,buildWhisperLyricsPrompt }=await import('./video-lyrics.js');
 const { factoryRoutes }=await import('./factory.js');
 const { localWorkerRoutes }=await import('./local-worker-api.js');
@@ -24,15 +24,16 @@ test('factory browser script parses and storage fails closed without configurati
   new Script(factoryScript);
   assert.match(factoryScript,/video\.poster=thumbnailUrl/);
   assert.match(factoryScript,/Повторити встановлення обкладинки/);
-  assert.match(factoryScript,/Опублікувати саме Shorts/);
+  assert.match(factoryScript,/function conveyorShortsWorkspace/);
   assert.match(factoryScript,/function shortPlanView/);
-  assert.match(factoryScript,/Картинки не генеруються/);
+  assert.match(factoryScript,/ШІ переглядає кадри/);
+  assert.doesNotMatch(factoryScript,/Картинки не генеруються/);
   assert.match(factoryScript,/input\.multiple=true/);
-  assert.match(factoryScript,/orderedShortFiles/);
+  assert.match(factoryScript,/shorts-arrange/);
   assert.match(factoryScript,/shorts-manual/);
-  assert.match(factoryScript,/6 відеопромптів · показати/);
-  assert.match(factoryScript,/Підготувати 6 відеопромптів/);
-  assert.match(factoryScript,/автоматично запустить монтаж/);
+  assert.match(factoryScript,/Показати 6 компактних відеопромптів/);
+  assert.match(factoryScript,/Підготувати 6 промптів/);
+  assert.match(factoryScript,/Порядок назв неважливий/);
   assert.match(factoryScript,/Завантажити повне відео приватно на YouTube/);
   assert.match(factoryScript,/form\.hidden=!!active/);
   assert.match(factoryScript,/Копіювати назву/);
@@ -47,9 +48,9 @@ test('factory browser script parses and storage fails closed without configurati
   assert.match(factoryScript,/Скасувати задум/);
   assert.match(factoryScript,/Попередній результат збережено в історії як відхилений/);
   assert.match(factoryScript,/function compactReleaseCards/);
-  assert.match(factoryScript,/function shortsClips/);
-  assert.match(factoryScript,/shorts-clip/);
-  assert.match(factoryScript,/clipForm/);
+  assert.match(factoryScript,/function conveyorShortsWorkspace/);
+  assert.match(factoryScript,/shortsClipMatchingConfigured/);
+  assert.match(factoryScript,/factory-shorts-release/);
   assert.match(factoryScript,/function notes/);
   assert.match(factoryScript,/notesPending/);
   assert.match(factoryScript,/noteForm'\)\.requestSubmit/);
@@ -137,7 +138,11 @@ test('factory groups timestamped vocal words into bounded kinetic phrases',()=>{
     {word:'when',start:1.8,end:2.05},{word:'the',start:2.08,end:2.2},{word:'wolves',start:2.22,end:2.7},{word:'attack',start:2.72,end:3.1}
   ]);
   assert.equal(cues.length,2);assert.equal(cues[0]?.text,'Stand my ground');assert.equal(cues[0]?.accent,'GROUND');assert.equal(cues[1]?.accent,'WOLVES');
-  const fallback=buildStoryCaptionCues('One broken oath changed the northern kingdom');assert.equal(fallback.length,2);assert.ok(fallback.every(cue=>cue.end<=30));
+  const aligned=selectShortsLyrics([
+    {word:'Stand',start:40,end:40.5},{word:'my',start:40.6,end:40.8},{word:'ground',start:40.9,end:41.4},
+    {word:'when',start:41.5,end:41.8},{word:'the',start:41.9,end:42},{word:'wolves',start:42.1,end:42.6},{word:'attack',start:42.7,end:43.2}
+  ],'[Chorus]\nStand my ground when the wolves attack',120);
+  assert.equal(aligned?.section,'chorus');assert.equal(aligned?.cues[0]?.text,'Stand my ground when');assert.equal(aligned?.cues[1]?.text,'the wolves attack');assert.ok((aligned?.clipStart||0)>0);
 });
 
 test('factory: durable library, quotas, duplicates, reservation, retry, review and private upload',async()=>{
@@ -154,16 +159,17 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
   let published=0,thumbnails=0,rejectThumbnail=true;app.post('/youtube/upload',async req=>{published++;assert.equal((req.query as {children:string}).children,'no');return {videoId:'abcdefghijk'};});
   app.post('/youtube/thumbnail',async(_req,reply)=>{thumbnails++;return rejectThumbnail?reply.code(409).send({error:'YouTube ще не підтвердив обкладинку.'}):{ok:true};});
   await app.register(localWorkerRoutes,{storage});
-  await app.register(factoryRoutes,{storage,probe:async(_file:string,kind:string)=>kind==='mp4'?5:120,lyricTranscriber:null,publisher:async(_path:string,metadata:{children:'yes'|'no'})=>{published++;assert.equal(metadata.children,'no');return {videoId:'abcdefghijk',duplicate:false};},imageGenerator:async(_prompt:string,_seed:number,_signal?:AbortSignal,imageOptions?:{format?:'landscape'|'portrait'})=>{generated++;imageFormats.push(imageOptions?.format||'landscape');return {data:Buffer.from('<svg width="1280" height="720" xmlns="http://www.w3.org/2000/svg"><rect width="1280" height="720" fill="#31513a"/></svg>'),type:'image/png'};},render:async(images:string|string[],_audio:string,out:string,_kind:string,_signal?:AbortSignal,format?:'video'|'shorts',preset?:string,onProgress?:(p:{percent:number;seconds:number;duration:number})=>void,_intensity?:string,_effects?:readonly string[],lyricOverlays?:ReadonlyArray<{path:string;start:number;end:number}>)=>{renders++;renderFormats.push(format||'video');renderSceneCounts.push(Array.isArray(images)?images.length:1);lyricOverlayCounts.push(lyricOverlays?.length||0);if(preset)renderPresets.push(preset);onProgress?.({percent:50,seconds:60,duration:120});if(renderFail)throw Error('test render interruption');await writeFile(out,Buffer.from('0000ftypisom-fake-render-test'));},renderClips:async(clips:string[],_durations:number[],_audio:string,out:string,_kind:string,_signal?:AbortSignal,onProgress?:(p:{percent:number;seconds:number;duration:number})=>void)=>{renderFormats.push('shorts');renderSceneCounts.push(clips.length);lyricOverlayCounts.push(0);onProgress?.({percent:100,seconds:30,duration:30});await writeFile(out,Buffer.from('0000ftypisom-fake-manual-shorts'));}});
+  await app.register(factoryRoutes,{storage,probe:async(_file:string,kind:string)=>kind==='mp4'?5:120,lyricTranscriber:async()=>({clipStart:45,clipDuration:30,section:'chorus',cues:[{start:.2,end:2,text:'We carry home',accent:'CARRY'},{start:2.1,end:4,text:'the flame again',accent:'FLAME'}]}),clipOrderer:async()=>[5,4,3,2,1,0],clipFrameExtractor:async()=>Buffer.from('representative-frame'),publisher:async(_path:string,metadata:{children:'yes'|'no'})=>{published++;assert.equal(metadata.children,'no');return {videoId:'abcdefghijk',duplicate:false};},imageGenerator:async(_prompt:string,_seed:number,_signal?:AbortSignal,imageOptions?:{format?:'landscape'|'portrait'})=>{generated++;imageFormats.push(imageOptions?.format||'landscape');return {data:Buffer.from('<svg width="1280" height="720" xmlns="http://www.w3.org/2000/svg"><rect width="1280" height="720" fill="#31513a"/></svg>'),type:'image/png'};},render:async(images:string|string[],_audio:string,out:string,_kind:string,_signal?:AbortSignal,format?:'video'|'shorts',preset?:string,onProgress?:(p:{percent:number;seconds:number;duration:number})=>void,_intensity?:string,_effects?:readonly string[],lyricOverlays?:ReadonlyArray<{path:string;start:number;end:number}>)=>{renders++;renderFormats.push(format||'video');renderSceneCounts.push(Array.isArray(images)?images.length:1);lyricOverlayCounts.push(lyricOverlays?.length||0);if(preset)renderPresets.push(preset);onProgress?.({percent:50,seconds:60,duration:120});if(renderFail)throw Error('test render interruption');await writeFile(out,Buffer.from('0000ftypisom-fake-render-test'));},renderClips:async(clips:string[],_durations:number[],_audio:string,out:string,_kind:string,_signal?:AbortSignal,onProgress?:(p:{percent:number;seconds:number;duration:number})=>void,lyricOverlays?:ReadonlyArray<{path:string;start:number;end:number}>)=>{renderFormats.push('shorts');renderSceneCounts.push(clips.length);lyricOverlayCounts.push(lyricOverlays?.length||0);onProgress?.({percent:100,seconds:30,duration:30});await writeFile(out,Buffer.from('0000ftypisom-fake-manual-shorts'));}});
   const headers={origin:'https://api.example.test'};
   const post=(url:string,payload:Record<string,unknown>)=>app.inject({method:'POST',url,headers,payload});
   const upload=(kind:string,body:Buffer,name:string)=>app.inject({method:'POST',url:'/api/factory/assets?kind='+kind+'&vocal=instrumental',headers:{...headers,'content-type':'multipart/form-data; boundary=testboundary'},payload:Buffer.concat([Buffer.from('--testboundary\r\nContent-Disposition: form-data; name="file"; filename="'+name+'"\r\nContent-Type: application/octet-stream\r\n\r\n'),body,Buffer.from('\r\n--testboundary--\r\n')])});
   const uploadIdea=(body:Buffer,name:string,ideaId:string,theme='')=>app.inject({method:'POST',url:'/api/factory/assets?kind=audio&ideaId='+ideaId+'&theme='+encodeURIComponent(theme),headers:{...headers,'content-type':'multipart/form-data; boundary=testboundary'},payload:Buffer.concat([Buffer.from('--testboundary\r\nContent-Disposition: form-data; name="file"; filename="'+name+'"\r\nContent-Type: application/octet-stream\r\n\r\n'),body,Buffer.from('\r\n--testboundary--\r\n')])});
   const waitState=async(id:string,state:string)=>{for(let i=0;i<100;i++){const r=(await q('SELECT * FROM factory_releases WHERE id=$1',[id])).rows[0] as {state:string};if(r.state===state)return;await new Promise(r=>setTimeout(r,10));}assert.fail('Expected '+state);};
+  const waitShortState=async(id:string,state:string)=>{for(let i=0;i<100;i++){const r=(await q('SELECT short_state FROM factory_releases WHERE id=$1',[id])).rows[0] as {short_state:string};if(r.short_state===state)return;await new Promise(r=>setTimeout(r,10));}assert.fail('Expected Shorts '+state);};
   try{
     await db.exec(factoryMigration);await db.exec(factorySongMigration);await db.exec("CREATE TABLE youtube_uploads(file_hash TEXT PRIMARY KEY,state TEXT NOT NULL CHECK(state IN ('uploading','complete','uncertain')),video_id TEXT)");
     authorized=false;assert.equal((await app.inject('/api/factory')).statusCode,401);authorized=true;
-    const factoryHtml=await app.inject('/factory');assert.match(factoryHtml.body,/\/factory\/icon\.svg/);assert.match(factoryHtml.body,/Тіллі Сміт: урок, що врятував пляж/);assert.match(factoryHtml.body,/Wan 2\.2 \+ ComfyUI/);assert.match(factoryHtml.body,/id="clipForm"/);assert.match(factoryHtml.body,/id="noteForm"/);const favicon=await app.inject('/factory/icon.svg');assert.equal(favicon.statusCode,200);assert.match(favicon.headers['content-type']||'',/image\/svg\+xml/);assert.match(favicon.body,/bde998/);
+    const factoryHtml=await app.inject('/factory');assert.match(factoryHtml.body,/\/factory\/icon\.svg/);assert.match(factoryHtml.body,/Тіллі Сміт: урок, що врятував пляж/);assert.match(factoryHtml.body,/id="shortsWorkspace"/);assert.doesNotMatch(factoryHtml.body,/href="#shorts-lab"/);assert.doesNotMatch(factoryHtml.body,/id="clipForm"/);assert.match(factoryHtml.body,/id="noteForm"/);const favicon=await app.inject('/factory/icon.svg');assert.equal(favicon.statusCode,200);assert.match(favicon.headers['content-type']||'',/image\/svg\+xml/);assert.match(favicon.body,/bde998/);
     assert.equal((await app.inject({method:'POST',url:'/api/factory/recipe',headers:{origin:'https://evil.test'},payload:{}})).statusCode,403);
     const newNote=await post('/api/factory/notes',{text:'Зробити сильніший початок Shorts'});assert.equal(newNote.statusCode,201,newNote.body);assert.equal(newNote.json().completed,false);
     const noteId=newNote.json().id;let noteState=(await app.inject('/api/factory')).json();assert.equal(noteState.notes[0].text,'Зробити сильніший початок Shorts');
@@ -214,18 +220,21 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
     await q("INSERT INTO youtube_uploads(file_hash,state) VALUES($1,'uncertain')",[outputHash]);
     await q("UPDATE youtube_uploads SET state='uncertain',video_id=NULL WHERE file_hash=$1",[outputHash]);await q("UPDATE factory_releases SET state='uncertain',video_id=NULL,error='lost response' WHERE id=$1",[id]);
     const resetUpload=await post('/api/factory/releases/'+id+'/resolve-upload',{target:'video',action:'reset',confirmation:'NOT_ON_YOUTUBE'});assert.equal(resetUpload.statusCode,200,resetUpload.body);assert.equal(((await q('SELECT state FROM factory_releases WHERE id=$1',[id])).rows[0] as {state:string}).state,'review');await q("UPDATE factory_releases SET state='private',video_id='abcdefghijk' WHERE id=$1",[id]);
+    const shortsIdeaId=randomUUID(),shortsSong={title:release.title,concept:'Two keepers return through the winter pass.',lyrics:'[Verse 1]\n'+('The northern road remembers every name\n'.repeat(8))+'[Chorus]\n'+('We carry home the flame again\n'.repeat(8)),sunoPrompt:'Epic Viking anthem.',artworkPrompt:'Two original adult Vikings in a winter pass.'};
+    await q("INSERT INTO factory_song_ideas(id,channel_id,mode,brief,state,content,approved_at,audio_id) VALUES($1,'veil-of-ages','viking-anthem','Shorts test','approved',$2,NOW(),$3)",[shortsIdeaId,JSON.stringify(shortsSong),audio.json().id]);await q("UPDATE factory_releases SET recipe=jsonb_set(recipe,'{ideaId}',to_jsonb($2::text),true) WHERE id=$1",[id,shortsIdeaId]);
     const generatedBeforePlan=generated,shortPlan=await post('/api/factory/releases/'+id+'/shorts-plan',{});assert.equal(shortPlan.statusCode,200,shortPlan.body);assert.equal(shortPlan.json().plan.scenes.length,6);assert.equal(generated,generatedBeforePlan);
     const plannedRow=(await q('SELECT short_plan FROM factory_releases WHERE id=$1',[id])).rows[0] as {short_plan:{hook:string;scenes:unknown[]}};assert.ok(plannedRow.short_plan.hook);assert.equal(plannedRow.short_plan.scenes.length,6);assert.equal((await q('SELECT * FROM factory_short_scenes WHERE release_id=$1',[id])).rows.length,0);
     const storyboardStart=await post('/api/factory/releases/'+id+'/shorts-storyboard',{});assert.equal(storyboardStart.statusCode,409,storyboardStart.body);assert.match(storyboardStart.json().error,/картинки вимкнено/i);
-    const automaticShorts=await post('/api/factory/releases/'+id+'/shorts',{});assert.equal(automaticShorts.statusCode,409,automaticShorts.body);assert.match(automaticShorts.json().error,/шість відеофрагментів/i);
+    const automaticShorts=await post('/api/factory/releases/'+id+'/shorts',{});assert.equal(automaticShorts.statusCode,202,automaticShorts.body);await waitShortState(id,'review');assert.equal(renderSceneCounts.at(-1),1);assert.equal(lyricOverlayCounts.at(-1),2);
     for(let position=0;position<6;position++){
       const shortClipPayload=Buffer.concat([Buffer.from('--testboundary\r\nContent-Disposition: form-data; name="file"; filename="scene-'+(position+1)+'.mp4"\r\nContent-Type: video/mp4\r\n\r\n'),Buffer.from('0000ftypisom-short-scene-'+position),Buffer.from('\r\n--testboundary--\r\n')]);
       const savedClip=await app.inject({method:'POST',url:'/api/factory/releases/'+id+'/shorts-clips?position='+position,headers:{...headers,'content-type':'multipart/form-data; boundary=testboundary'},payload:shortClipPayload});assert.equal(savedClip.statusCode,201,savedClip.body);
     }
     assert.equal((await q('SELECT * FROM factory_short_clips WHERE release_id=$1',[id])).rows.length,6);assert.equal(generated,generatedBeforePlan);
+    const arranged=await post('/api/factory/releases/'+id+'/shorts-arrange',{});assert.equal(arranged.statusCode,200,arranged.body);assert.equal(arranged.json().assignments[0].name,'scene-6.mp4');
     const shortsStart=await post('/api/factory/releases/'+id+'/shorts-manual',{});assert.equal(shortsStart.statusCode,202,shortsStart.body);
     for(let i=0;i<100;i++){const row=(await q('SELECT short_state,short_output_id FROM factory_releases WHERE id=$1',[id])).rows[0] as {short_state:string;short_output_id:string};if(row.short_state==='review'){assert.equal((await app.inject('/api/factory/assets/'+row.short_output_id+'/file')).statusCode,200);const poster=await app.inject('/api/factory/releases/'+id+'/shorts-poster');assert.equal(poster.statusCode,200);assert.equal((await sharp(poster.rawPayload).metadata()).height,1280);break;}if(i===99)assert.fail('Expected Shorts review state');await new Promise(resolve=>setTimeout(resolve,10));}
-    assert.equal(renderFormats.at(-1),'shorts');assert.equal(renderSceneCounts.at(-1),6);assert.equal(lyricOverlayCounts.at(-1),0);assert.equal(imageFormats.filter(format=>format==='portrait').length,0);
+    assert.equal(renderFormats.at(-1),'shorts');assert.equal(renderSceneCounts.at(-1),6);assert.equal(lyricOverlayCounts.at(-1),2);assert.equal(imageFormats.filter(format=>format==='portrait').length,0);
     const shortRow=(await q('SELECT short_cover_id,short_plan FROM factory_releases WHERE id=$1',[id])).rows[0] as {short_cover_id:string|null;short_plan:{mode:string;scenes:unknown[]}};assert.equal(shortRow.short_cover_id,null);assert.equal(shortRow.short_plan.mode,'manual-video');assert.equal(shortRow.short_plan.scenes.length,6);
     assert.equal((await post('/api/factory/releases/'+id+'/publish-short',{children:'no',synthetic:'yes',rights:false})).statusCode,400);assert.equal(published,1);
     const shortPublish=await post('/api/factory/releases/'+id+'/publish-short',{children:'no',synthetic:'yes',rights:true});assert.equal(shortPublish.statusCode,200,shortPublish.body);assert.equal(published,2);assert.equal(shortPublish.json().videoId,'abcdefghijk');
@@ -235,7 +244,7 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
     const restoredShort=await post('/api/factory/releases/'+id+'/resolve-upload',{target:'shorts',action:'reconcile'});assert.equal(restoredShort.statusCode,200,restoredShort.body);assert.equal(restoredShort.json().videoId,'shorts00001');const restoredShortRow=(await q('SELECT state,short_publish_state FROM factory_releases WHERE id=$1',[id])).rows[0] as {state:string;short_publish_state:string};assert.equal(restoredShortRow.state,'uncertain');assert.equal(restoredShortRow.short_publish_state,'private');await q("UPDATE factory_releases SET state='private' WHERE id=$1",[id]);
     assert.equal((await post('/api/factory/releases/'+id+'/publish',{children:'no',synthetic:'yes',rights:true})).statusCode,409);assert.equal(published,2);
     const reconcileIdeaId=randomUUID(),reconcileSong={title:release.title,concept:'A keeper returns to the northern castle and completes an old promise before winter.',lyrics:'[Verse 1]\n'+('The northern road remembers every name\n'.repeat(12))+'[Chorus]\n'+('We carry home the flame again\n'.repeat(8)),sunoPrompt:'Epic Viking anthem with a low male lead, controlled choir, frame drums and bowed strings.',artworkPrompt:'Two original adult Vikings beside a northern castle, cinematic realism, no text or logos.'};
-    await q("INSERT INTO factory_song_ideas(id,channel_id,mode,brief,state,content,approved_at) VALUES($1,'veil-of-ages','viking-anthem','Reconcile test','approved',$2,NOW())",[reconcileIdeaId,JSON.stringify(reconcileSong)]);
+    await q('UPDATE factory_song_ideas SET audio_id=NULL WHERE id=$1',[shortsIdeaId]);await q("UPDATE factory_releases SET recipe=recipe-'ideaId' WHERE id=$1",[id]);await q("INSERT INTO factory_song_ideas(id,channel_id,mode,brief,state,content,approved_at) VALUES($1,'veil-of-ages','viking-anthem','Reconcile test','approved',$2,NOW())",[reconcileIdeaId,JSON.stringify(reconcileSong)]);
     const reconciled=await uploadIdea(mp3,'Castle.mp3',reconcileIdeaId);assert.equal(reconciled.statusCode,200,reconciled.body);assert.equal(reconciled.json().alreadyReleased,true);assert.equal(reconciled.json().releaseId,id);assert.equal(((await q('SELECT audio_id FROM factory_song_ideas WHERE id=$1',[reconcileIdeaId])).rows[0] as {audio_id:string}).audio_id,audio.json().id);assert.equal(((await q('SELECT recipe FROM factory_releases WHERE id=$1',[id])).rows[0] as {recipe:{ideaId:string}}).recipe.ideaId,reconcileIdeaId);
     process.env.LOCAL_WORKER_SECRET='local-worker-test-secret-0123456789abcdef';const workerHeaders={authorization:'Bearer '+process.env.LOCAL_WORKER_SECRET};
     assert.equal((await app.inject({method:'POST',url:'/api/local-worker/heartbeat',payload:{workerId:'test-pc',name:'Test PC',capabilities:{gpu:'test'},busy:false,releaseId:null}})).statusCode,401);

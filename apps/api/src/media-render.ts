@@ -151,7 +151,7 @@ export function buildCinematicFilters(width: number, height: number, duration: n
   return { video:video.join(';'), audio };
 }
 
-export async function renderMedia(image: string|string[], audio: string, output: string, audioKind: string, signal?: AbortSignal, format: 'video' | 'shorts' = 'video', preset: CinematicPreset = 'ancient-mist', onProgress?: (progress: MediaProgress) => void, intensity:MotionIntensity='cinematic', effects:ReadonlyArray<FactoryEffectId>=ACTIVE_EFFECT_IDS, lyricOverlays:ReadonlyArray<ShortsLyricOverlay>=[],videoLyricTrack?:VideoLyricTrack|null): Promise<void> {
+export async function renderMedia(image: string|string[], audio: string, output: string, audioKind: string, signal?: AbortSignal, format: 'video' | 'shorts' = 'video', preset: CinematicPreset = 'ancient-mist', onProgress?: (progress: MediaProgress) => void, intensity:MotionIntensity='cinematic', effects:ReadonlyArray<FactoryEffectId>=ACTIVE_EFFECT_IDS, lyricOverlays:ReadonlyArray<ShortsLyricOverlay>=[],videoLyricTrack?:VideoLyricTrack|null,sourceClip?:{start:number;duration:number}): Promise<void> {
   const probe = process.env.FFPROBE_PATH || 'ffprobe';
   const common = ['-v', 'error', '-max_alloc', '67108864', '-protocol_whitelist', 'file,pipe'];
   const images=Array.isArray(image)?image:[image];
@@ -166,7 +166,9 @@ export async function renderMedia(image: string|string[], audio: string, output:
   if (!Number.isFinite(duration) || duration < 1 || duration > MAX_DURATION || !sound.streams?.some((s: { codec_type: string }) => s.codec_type === 'audio')) throw new Error('Аудіо має тривати від 1 секунди до 5 хвилин.');
   const targetWidth = format === 'shorts' ? 720 : 1280;
   const targetHeight = format === 'shorts' ? 1280 : 720;
-  const clip=format==='shorts'?shortsClip(duration):{start:0,duration};
+  const requested=format==='shorts'&&sourceClip?sourceClip:format==='shorts'?shortsClip(duration):{start:0,duration};
+  const clip={start:Math.max(0,Math.min(duration-1,Number(requested.start)||0)),duration:Math.min(duration,Math.max(1,Number(requested.duration)||duration))};
+  clip.duration=Math.min(clip.duration,duration-clip.start);
   const renderDuration = clip.duration;
   const captions=format==='shorts'?lyricOverlays.filter(cue=>Number.isFinite(cue.start)&&Number.isFinite(cue.end)&&cue.start>=0&&cue.end>cue.start&&cue.start<renderDuration).slice(0,12):[];
   const fullLyrics=format==='video'&&!!videoLyricTrack;
@@ -207,14 +209,15 @@ export async function renderMedia(image: string|string[], audio: string, output:
  * prompt remains visible in the finished 30-second story. Each input is
  * scaled/cropped in the stream, so Render does not hold decoded clips in memory.
  */
-export async function renderVideoClips(clips: string[], clipDurations: number[], audio: string, output: string, audioKind: string, signal?: AbortSignal, onProgress?: (progress: MediaProgress) => void): Promise<void> {
+export async function renderVideoClips(clips: string[], clipDurations: number[], audio: string, output: string, audioKind: string, signal?: AbortSignal, onProgress?: (progress: MediaProgress) => void,lyricOverlays:ReadonlyArray<ShortsLyricOverlay>=[],sourceClip?:{start:number;duration:number}): Promise<void> {
   if (clips.length < 1 || clips.length > 6 || clips.length !== clipDurations.length) throw new Error('Потрібно від одного до шести відеофрагментів.');
   const probe = process.env.FFPROBE_PATH || 'ffprobe';
   const common = ['-v', 'error', '-max_alloc', '67108864', '-protocol_whitelist', 'file,pipe'];
   const sound = JSON.parse(await runMediaTool(probe, [...common, '-f', audioKind, '-show_entries', 'format=duration:stream=codec_type', '-of', 'json', audio], 15000, signal));
   const audioDuration = Number(sound.format?.duration);
   if (!Number.isFinite(audioDuration) || audioDuration < 1 || audioDuration > MAX_DURATION || !sound.streams?.some((s: { codec_type: string }) => s.codec_type === 'audio')) throw new Error('Аудіо має тривати від 1 секунди до 5 хвилин.');
-  const clipWindow = Math.min(SHORTS_DURATION, audioDuration);
+  const requested=sourceClip??shortsClip(audioDuration),clipStart=Math.max(0,Math.min(audioDuration-1,Number(requested.start)||0));
+  const clipWindow = Math.min(SHORTS_DURATION,audioDuration-clipStart,Math.max(1,Number(requested.duration)||SHORTS_DURATION));
   const validDurations = clipDurations.map(value => Number.isFinite(value) && value > 0 ? Math.min(value, 60) : 0);
   if (validDurations.some(value => value < 0.25) || validDurations.reduce((sum, value) => sum + value, 0) < 0.25) throw new Error('Один із відеофрагментів не має коректної тривалості.');
   const sequence: Array<{ index: number; duration: number }> = clips.length===6
@@ -227,8 +230,12 @@ export async function renderVideoClips(clips: string[], clipDurations: number[],
   }
   if (!sequence.length) throw new Error('Відеофрагменти порожні.');
   const filters = sequence.map((segment, index) => `[${index}:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1,fps=24,tpad=stop_mode=clone:stop_duration=${segment.duration.toFixed(3)},trim=duration=${segment.duration.toFixed(3)},setpts=PTS-STARTPTS,format=yuv420p[v${index}]`);
-  filters.push(sequence.map((_segment, index) => `[v${index}]`).join('') + `concat=n=${sequence.length}:v=1:a=0[vout]`);
-  const audioInputIndex = sequence.length;
+  filters.push(sequence.map((_segment, index) => `[v${index}]`).join('') + `concat=n=${sequence.length}:v=1:a=0[story]`);
+  const captions=lyricOverlays.filter(cue=>Number.isFinite(cue.start)&&Number.isFinite(cue.end)&&cue.start>=0&&cue.end>cue.start&&cue.start<clipWindow).slice(0,18);
+  let composed='story';
+  captions.forEach((cue,index)=>{const input=sequence.length+index,next=`captioned${index}`;filters.push(`[${input}:v]format=rgba[caption${index}]`);filters.push(`[${composed}][caption${index}]overlay=x='(main_w-overlay_w)/2':y=650:enable='between(t,${cue.start.toFixed(3)},${cue.end.toFixed(3)})':eof_action=pass[${next}]`);composed=next;});
+  filters.push(`[${composed}]null[vout]`);
+  const audioInputIndex = sequence.length+captions.length;
   filters.push(`[${audioInputIndex}:a]aresample=48000,afade=t=in:st=0:d=${Math.min(1.5,clipWindow / 5).toFixed(3)},afade=t=out:st=${Math.max(0,clipWindow - Math.min(2,clipWindow / 4)).toFixed(3)}:d=${Math.min(2,clipWindow / 4).toFixed(3)}[aout]`);
   let progressBuffer = '';
   const parseProgress = (chunk: string) => {
@@ -236,12 +243,13 @@ export async function renderVideoClips(clips: string[], clipDurations: number[],
     for (const line of lines) { const match = /^out_time_us=(\d+)$/.exec(line); if (match) { const seconds = Math.min(clipWindow, Number(match[1]) / 1_000_000); onProgress?.({ seconds, duration: clipWindow, percent: Math.min(100, Math.max(0, seconds / clipWindow * 100)) }); } }
   };
   const inputArgs = sequence.flatMap(segment => ['-protocol_whitelist', 'file,pipe', '-i', clips[segment.index]!]);
+  const lyricInputs=captions.flatMap(cue=>['-protocol_whitelist','file,pipe','-f','image2','-loop','1','-framerate','24','-i',cue.path]);
   const useNvenc = process.env.LOCAL_VIDEO_ENCODER === 'h264_nvenc';
   const threads = String(Math.max(1, Math.min(8, Number(process.env.MEDIA_THREADS) || 1)));
   const videoCodec = useNvenc ? ['-c:v', 'h264_nvenc', '-preset', 'p4', '-tune', 'hq', '-rc', 'vbr', '-cq', '23', '-b:v', '0', '-maxrate', '900k', '-bufsize', '1800k'] : ['-c:v', 'libx264', '-threads', threads, '-preset', 'superfast', '-crf', '22', '-maxrate', '900k', '-bufsize', '1800k'];
   await runMediaTool(process.env.FFMPEG_PATH || 'ffmpeg', [
     '-hide_banner', '-loglevel', 'error', '-nostdin', '-n', '-max_alloc', '67108864', '-filter_threads', '1', '-filter_complex_threads', '1',
-    ...inputArgs, '-protocol_whitelist', 'file,pipe', '-f', audioKind, ...(audioDuration > clipWindow ? ['-ss', shortsClip(audioDuration).start.toFixed(3)] : []), '-i', audio,
+    ...inputArgs,...lyricInputs, '-protocol_whitelist', 'file,pipe', '-f', audioKind, ...(clipStart>0?['-ss',clipStart.toFixed(3)]:[]), '-i', audio,
     '-filter_complex', filters.join(';'), '-map', '[vout]', '-map', '[aout]', '-map_metadata', '-1', ...videoCodec, '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-t', String(clipWindow), '-shortest', '-fs', String(MAX_OUTPUT_BYTES), '-movflags', '+faststart', '-progress', 'pipe:1', '-nostats', output
   ], 90 * 60 * 1000, signal, parseProgress, 5 * 60 * 1000);
   const result = JSON.parse(await runMediaTool(probe, [...common, '-show_entries', 'format=duration:stream=codec_type,width,height', '-of', 'json', output], 15000, signal));
