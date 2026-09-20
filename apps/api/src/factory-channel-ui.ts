@@ -269,6 +269,11 @@ textarea {
 .shorts-mode.recommended { border-color: #bde99865; background: linear-gradient(135deg,#102017,#0a150e); }
 .shorts-mapping { display: grid; gap: 6px; margin: 12px 0; }
 .shorts-mapping div { display: grid; grid-template-columns: 28px minmax(120px,.7fr) 1fr; gap: 8px; padding: 7px 9px; border-radius: 7px; background: #0a150e; color: #9fb394; font-size: 10px; }
+.shorts-production { margin: 16px 0; }
+.shorts-production.waiting { border-color: #d6b56955; }
+.shorts-production.waiting .progress-fill { background: linear-gradient(90deg,#8b6b43,#d9c174); animation: shorts-wait 1.8s ease-in-out infinite; }
+.shorts-production-steps { grid-template-columns: repeat(7,minmax(0,1fr)); }
+@keyframes shorts-wait { 50% { filter: brightness(1.25); box-shadow: 0 0 24px #d9c17470; } }
 .shorts-workspace video.shorts-preview { width: min(100%,360px); aspect-ratio: 9/16; object-fit: contain; background: #000; }
 
 @media (max-width: 650px) {
@@ -284,5 +289,6 @@ textarea {
   .release-summary-actions { justify-content: space-between; }
   .short-prompt-row { grid-template-columns: 1fr auto; }
   .short-prompt-row details { grid-column: 1 / -1; }
+  .shorts-production-steps { grid-template-columns: 1fr; }
 }
 `;

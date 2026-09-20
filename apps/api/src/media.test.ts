@@ -5,7 +5,7 @@ import { Script } from 'node:vm';
 import Fastify from 'fastify';
 import { buildCinematicFilters, MAX_OUTPUT_BYTES, mediaKind, videoKind, runMediaTool, MediaToolError, shortsClip } from './media-render.js';
 import { mediaScript } from './media-ui.js';
-import { classifyMemory } from './memory-budget.js';
+import { classifyMemory, reclaimableFileCache } from './memory-budget.js';
 
 process.env.PUBLIC_API_URL = 'https://api.example.test';
 process.env.YOUTUBE_SETUP_SECRET = 'media-test-secret-'.repeat(3);
@@ -82,6 +82,8 @@ test('memory budget pauses work before the Render hard limit without treating it
   assert.equal(classifyMemory(374,512).level,'safe');
   assert.equal(classifyMemory(384,512).level,'waiting');
   assert.equal(classifyMemory(420,512).level,'pressure');
+  assert.equal(reclaimableFileCache('anon 200\nfile 120\ninactive_file 96\n'),96);
+  assert.equal(reclaimableFileCache('total_cache 120\ntotal_inactive_file 88\n'),88);
 });
 
 test('media files require authentication; invalid origin is rejected', async () => {

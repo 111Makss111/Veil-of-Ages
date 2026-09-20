@@ -3,8 +3,8 @@ import { readFile } from 'node:fs/promises';
 export const MEMORY_SOFT_RATIO=.75;
 export const MEMORY_HARD_RATIO=.82;
 const paths=[
-  ['/sys/fs/cgroup/memory.current','/sys/fs/cgroup/memory.max'],
-  ['/sys/fs/cgroup/memory/memory.usage_in_bytes','/sys/fs/cgroup/memory/memory.limit_in_bytes']
+  ['/sys/fs/cgroup/memory.current','/sys/fs/cgroup/memory.max','/sys/fs/cgroup/memory.stat'],
+  ['/sys/fs/cgroup/memory/memory.usage_in_bytes','/sys/fs/cgroup/memory/memory.limit_in_bytes','/sys/fs/cgroup/memory/memory.stat']
 ] as const;
 
 export type MemoryBudget={used:number;limit:number;ratio:number;level:'safe'|'waiting'|'pressure'};
@@ -14,12 +14,17 @@ export function classifyMemory(used:number,limit:number,soft=MEMORY_SOFT_RATIO,h
   return {used,limit,ratio,level:ratio>=hard?'pressure':ratio>=soft?'waiting':'safe'};
 }
 
+export function reclaimableFileCache(stat:string):number{
+  const values=new Map(stat.split(/\r?\n/).map(line=>line.trim().split(/\s+/)).filter(parts=>parts.length===2).map(parts=>[parts[0]!,Number(parts[1])||0]));
+  return Math.max(0,values.get('inactive_file')??values.get('total_inactive_file')??0);
+}
+
 export async function readMemoryBudget():Promise<MemoryBudget|null>{
-  for(const [usedPath,limitPath] of paths){
+  for(const [usedPath,limitPath,statPath] of paths){
     try{
-      const [usedText,limitText]=await Promise.all([readFile(usedPath,'utf8'),readFile(limitPath,'utf8')]);
-      const used=Number(usedText.trim()),limit=Number(limitText.trim());
-      if(Number.isFinite(used)&&Number.isFinite(limit)&&used>=0&&limit>0&&limit<Number.MAX_SAFE_INTEGER)return classifyMemory(used,limit);
+      const [usedText,limitText,statText]=await Promise.all([readFile(usedPath,'utf8'),readFile(limitPath,'utf8'),readFile(statPath,'utf8').catch(()=>'')]);
+      const rawUsed=Number(usedText.trim()),limit=Number(limitText.trim()),used=Math.max(0,rawUsed-reclaimableFileCache(statText));
+      if(Number.isFinite(rawUsed)&&Number.isFinite(limit)&&rawUsed>=0&&limit>0&&limit<Number.MAX_SAFE_INTEGER)return classifyMemory(used,limit);
     }catch{}
   }
   return null;
