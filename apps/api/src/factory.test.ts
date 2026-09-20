@@ -15,7 +15,7 @@ const { chooseVisualPreset, factoryMigration, reserveAsset }=await import('./fac
 const { buildReleaseConcept,buildShortsConcept,buildShortsStoryPlan,buildOpenAIShortsStoryRequest }=await import('./factory-ai.js');
 const { factorySongMigration }=await import('./factory-song.js');
 const { buildYoutubeThumbnail,buildShortsArtwork,buildShortsStoryArtwork,buildKineticLyricOverlay,buildVideoLyricFrame }=await import('./factory-thumbnail.js');
-const { buildShortsLyricCues,selectShortsLyrics }=await import('./shorts-lyrics.js');
+const { buildManualShortsLyrics,buildShortsLyricCues,selectShortsLyrics }=await import('./shorts-lyrics.js');
 const { buildVideoLyricCues,buildWhisperLyricsPrompt }=await import('./video-lyrics.js');
 const { factoryRoutes }=await import('./factory.js');
 const { localWorkerRoutes }=await import('./local-worker-api.js');
@@ -34,6 +34,9 @@ test('factory browser script parses and storage fails closed without configurati
   assert.match(factoryScript,/Показати 6 компактних відеопромптів/);
   assert.match(factoryScript,/Підготувати 6 промптів/);
   assert.match(factoryScript,/Порядок назв неважливий/);
+  assert.match(factoryScript,/Взяти поточний час/);
+  assert.match(factoryScript,/chorusStart:timing\.value\(\)/);
+  assert.doesNotMatch(factoryScript,/Потрібне підключення OpenAI для точної синхронізації/);
   assert.match(factoryScript,/Завантажити повне відео приватно на YouTube/);
   assert.match(factoryScript,/form\.hidden=!!active/);
   assert.match(factoryScript,/Копіювати назву/);
@@ -143,6 +146,8 @@ test('factory groups timestamped vocal words into bounded kinetic phrases',()=>{
     {word:'when',start:41.5,end:41.8},{word:'the',start:41.9,end:42},{word:'wolves',start:42.1,end:42.6},{word:'attack',start:42.7,end:43.2}
   ],'[Chorus]\nStand my ground when the wolves attack',120);
   assert.equal(aligned?.section,'chorus');assert.equal(aligned?.cues[0]?.text,'Stand my ground when');assert.equal(aligned?.cues[1]?.text,'the wolves attack');assert.ok((aligned?.clipStart||0)>0);
+  const manual=buildManualShortsLyrics('[Verse]\nCold road\n[Chorus]\nStand my ground\nWhen the wolves attack\nCarry the fire\nWe are coming back',120,46.5);
+  assert.equal(manual?.clipStart,46.5);assert.equal(manual?.clipDuration,30);assert.equal(manual?.section,'chorus');assert.equal(manual?.cues.length,4);assert.equal(manual?.cues[0]?.text,'Stand my ground');assert.equal(manual?.cues.at(-1)?.end,30);
 });
 
 test('factory: durable library, quotas, duplicates, reservation, retry, review and private upload',async()=>{
@@ -225,7 +230,7 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
     const generatedBeforePlan=generated,shortPlan=await post('/api/factory/releases/'+id+'/shorts-plan',{});assert.equal(shortPlan.statusCode,200,shortPlan.body);assert.equal(shortPlan.json().plan.scenes.length,6);assert.equal(generated,generatedBeforePlan);
     const plannedRow=(await q('SELECT short_plan FROM factory_releases WHERE id=$1',[id])).rows[0] as {short_plan:{hook:string;scenes:unknown[]}};assert.ok(plannedRow.short_plan.hook);assert.equal(plannedRow.short_plan.scenes.length,6);assert.equal((await q('SELECT * FROM factory_short_scenes WHERE release_id=$1',[id])).rows.length,0);
     const storyboardStart=await post('/api/factory/releases/'+id+'/shorts-storyboard',{});assert.equal(storyboardStart.statusCode,409,storyboardStart.body);assert.match(storyboardStart.json().error,/картинки вимкнено/i);
-    const automaticShorts=await post('/api/factory/releases/'+id+'/shorts',{});assert.equal(automaticShorts.statusCode,202,automaticShorts.body);await waitShortState(id,'review');assert.equal(renderSceneCounts.at(-1),1);assert.equal(lyricOverlayCounts.at(-1),2);
+    const automaticShorts=await post('/api/factory/releases/'+id+'/shorts',{chorusStart:44});assert.equal(automaticShorts.statusCode,202,automaticShorts.body);await waitShortState(id,'review');assert.equal(renderSceneCounts.at(-1),1);assert.ok((lyricOverlayCounts.at(-1)||0)>=2);const timedShort=(await q('SELECT short_plan FROM factory_releases WHERE id=$1',[id])).rows[0] as {short_plan:{kineticText:{mode:string;clipStart:number}}};assert.equal(timedShort.short_plan.kineticText.mode,'manual');assert.equal(timedShort.short_plan.kineticText.clipStart,44);
     for(let position=0;position<6;position++){
       const shortClipPayload=Buffer.concat([Buffer.from('--testboundary\r\nContent-Disposition: form-data; name="file"; filename="scene-'+(position+1)+'.mp4"\r\nContent-Type: video/mp4\r\n\r\n'),Buffer.from('0000ftypisom-short-scene-'+position),Buffer.from('\r\n--testboundary--\r\n')]);
       const savedClip=await app.inject({method:'POST',url:'/api/factory/releases/'+id+'/shorts-clips?position='+position,headers:{...headers,'content-type':'multipart/form-data; boundary=testboundary'},payload:shortClipPayload});assert.equal(savedClip.statusCode,201,savedClip.body);
@@ -234,7 +239,7 @@ test('factory: durable library, quotas, duplicates, reservation, retry, review a
     const arranged=await post('/api/factory/releases/'+id+'/shorts-arrange',{});assert.equal(arranged.statusCode,200,arranged.body);assert.equal(arranged.json().assignments[0].name,'scene-6.mp4');
     const shortsStart=await post('/api/factory/releases/'+id+'/shorts-manual',{});assert.equal(shortsStart.statusCode,202,shortsStart.body);
     for(let i=0;i<100;i++){const row=(await q('SELECT short_state,short_output_id FROM factory_releases WHERE id=$1',[id])).rows[0] as {short_state:string;short_output_id:string};if(row.short_state==='review'){assert.equal((await app.inject('/api/factory/assets/'+row.short_output_id+'/file')).statusCode,200);const poster=await app.inject('/api/factory/releases/'+id+'/shorts-poster');assert.equal(poster.statusCode,200);assert.equal((await sharp(poster.rawPayload).metadata()).height,1280);break;}if(i===99)assert.fail('Expected Shorts review state');await new Promise(resolve=>setTimeout(resolve,10));}
-    assert.equal(renderFormats.at(-1),'shorts');assert.equal(renderSceneCounts.at(-1),6);assert.equal(lyricOverlayCounts.at(-1),2);assert.equal(imageFormats.filter(format=>format==='portrait').length,0);
+    assert.equal(renderFormats.at(-1),'shorts');assert.equal(renderSceneCounts.at(-1),6);assert.ok((lyricOverlayCounts.at(-1)||0)>=2);assert.equal(imageFormats.filter(format=>format==='portrait').length,0);
     const shortRow=(await q('SELECT short_cover_id,short_plan FROM factory_releases WHERE id=$1',[id])).rows[0] as {short_cover_id:string|null;short_plan:{mode:string;scenes:unknown[]}};assert.equal(shortRow.short_cover_id,null);assert.equal(shortRow.short_plan.mode,'manual-video');assert.equal(shortRow.short_plan.scenes.length,6);
     assert.equal((await post('/api/factory/releases/'+id+'/publish-short',{children:'no',synthetic:'yes',rights:false})).statusCode,400);assert.equal(published,1);
     const shortPublish=await post('/api/factory/releases/'+id+'/publish-short',{children:'no',synthetic:'yes',rights:true});assert.equal(shortPublish.statusCode,200,shortPublish.body);assert.equal(published,2);assert.equal(shortPublish.json().videoId,'abcdefghijk');

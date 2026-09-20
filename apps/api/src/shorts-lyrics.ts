@@ -60,6 +60,20 @@ function alignLyrics(lyrics:LyricToken[],speech:TimedWord[]){
 
 function splitLine(indexes:number[],size=6){const count=Math.ceil(indexes.length/size),balanced=Math.ceil(indexes.length/count),chunks:number[][]=[];for(let i=0;i<indexes.length;i+=balanced)chunks.push(indexes.slice(i,i+balanced));return chunks;}
 
+export function buildManualShortsLyrics(knownLyrics:string,duration:number,requestedStart:number):ShortsLyricSelection|null{
+  const chorus=[...knownLyrics.replace(/\r/g,'').matchAll(/\[([^\]]+)]([\s\S]*?)(?=\[[^\]]+]|$)/g)]
+    .find(match=>match[1]!.toLowerCase().includes('chorus'))?.[2]||'';
+  const lines=chorus.split('\n').map(cleanPhrase).filter(Boolean).slice(0,8);
+  if(lines.length<2||!Number.isFinite(duration)||duration<1)return null;
+  const clipDuration=Math.min(30,duration),clipStart=Math.max(0,Math.min(Math.max(0,duration-clipDuration),Number(requestedStart)||0));
+  const slot=clipDuration/lines.length;
+  const cues=lines.map((text,index)=>{
+    const words=text.match(/[\p{L}\p{N}][\p{L}\p{N}'’\-]*/gu)||[],start=index*slot,end=Math.min(clipDuration,(index+1)*slot);
+    return {start:Number(start.toFixed(2)),end:Number(end.toFixed(2)),text,accent:accentOf(words).toUpperCase()};
+  });
+  return {clipStart:Number(clipStart.toFixed(2)),clipDuration:Number(clipDuration.toFixed(2)),section:'chorus',cues};
+}
+
 export function selectShortsLyrics(input:TranscriptionWord[],knownLyrics:string,duration:number):ShortsLyricSelection|null{
   const speech:TimedWord[]=input.map(item=>({word:cleanWord(item.word),key:wordKey(item.word),start:Number(item.start),end:Number(item.end)}))
     .filter(item=>item.key&&Number.isFinite(item.start)&&Number.isFinite(item.end)&&item.start>=0&&item.end>item.start&&item.start<duration)

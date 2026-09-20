@@ -11,7 +11,7 @@ export type ReleaseConcept = { hash: string; title: string; prompt: string; seed
 export type SongVisualBrief = { title:string; concept:string; artworkPrompt:string };
 export type ShortsStoryScene = {position:number;label:string;timing:string;motion:string;moment:string;prompt:string;videoPrompt:string;seed:number;hash:string};
 export type ShortsStorySource = 'lyrics-ai'|'lyrics-fallback'|'concept-fallback';
-export type ShortsStoryPlan = {version:1;format:'story';mode?:'simple-cover'|'manual-video';source:ShortsStorySource;sourceNote:string;hook:string;story:string;identity:string;scenes:ShortsStoryScene[];kineticText:{mode:'pending'|'transcribed';cues:ShortsLyricCue[];clipStart?:number;clipDuration?:number;section?:'chorus'|'vocal'}};
+export type ShortsStoryPlan = {version:1;format:'story';mode?:'simple-cover'|'manual-video';source:ShortsStorySource;sourceNote:string;hook:string;story:string;identity:string;scenes:ShortsStoryScene[];kineticText:{mode:'pending'|'manual'|'transcribed';cues:ShortsLyricCue[];clipStart?:number;clipDuration?:number;section?:'chorus'|'vocal'}};
 export type ImageFormat = 'landscape'|'portrait';
 export type ImageGenerator = (prompt: string, seed: number, signal?: AbortSignal, options?:{format?:ImageFormat}) => Promise<{ data: Buffer; type: 'image/jpeg'|'image/png' }>;
 export type ShortsClipOrderer = (frames:ReadonlyArray<Buffer>,scenes:ReadonlyArray<ShortsStoryScene>,signal?:AbortSignal)=>Promise<number[]>;
