@@ -3,6 +3,7 @@ import { z } from "zod";
 
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+  VEIL_LOCAL_MODE: z.enum(["0", "1", "false", "true"]).default("false").transform(value => value === "1" || value === "true"),
   PORT: z.coerce.number().int().positive().default(4000),
   DATABASE_URL: z.string().url().optional(),
   WEB_ORIGIN: z.string().url().default("http://localhost:3000"),

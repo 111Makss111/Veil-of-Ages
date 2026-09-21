@@ -42,6 +42,12 @@ export async function installOwnerAuth(app: FastifyInstance) {
   app.decorateRequest('ownerSession', undefined);
   app.addHook('onRequest', async (request, reply) => {
     const path = request.url.split('?')[0]!;
+    if (config.VEIL_LOCAL_MODE) {
+      reply.header('Cache-Control', 'no-store').header('Referrer-Policy', 'same-origin').header('X-Content-Type-Options', 'nosniff').header('X-Frame-Options', 'DENY');
+      if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && request.headers.origin !== origin) return reply.code(403).send({ error: 'Недійсне джерело запиту. Відкрий кабінет заново.' });
+      request.ownerSession = { token_hash: 'local', google_sub: 'local-owner', verified: true, enrollment_encrypted: null };
+      return;
+    }
     if (path === '/health' || (path === '/webhooks/telegram' && request.method === 'POST')) return;
     // Local montage stations are non-browser clients. Their isolated route
     // plugin authenticates every request with LOCAL_WORKER_SECRET, so browser
@@ -74,6 +80,7 @@ export async function installOwnerAuth(app: FastifyInstance) {
     return reply.type('text/html').send(accountPage);
   });
   app.get('/auth/owner/me', async (request) => {
+    if (config.VEIL_LOCAL_MODE) return { stage: 'ready', configured: true, email: OWNER_EMAIL, local: true };
     if (!request.ownerSession) return { stage: 'google', configured: ready() };
     const result = await requirePool().query('SELECT totp_encrypted FROM studio_owner WHERE id=1');
     return { stage: request.ownerSession.verified ? 'ready' : result.rows[0]?.totp_encrypted ? 'totp' : 'enroll', email: OWNER_EMAIL };

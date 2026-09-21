@@ -23,6 +23,7 @@ import { alignShortsWordsToRhythm, buildManualShortsLyrics, shortsTranscriptionC
 import { waitForMemory } from './memory-budget.js';
 import { uploadPrivateVideoFile, YoutubeUploadOutcomeError, type Metadata as YoutubeMetadata } from './youtube-upload.js';
 import { getLocalWorkerSummary, localWorkerConfigured } from './local-worker-api.js';
+import { config } from './config.js';
 
 const uuid=z.string().uuid();
 const vocal=z.enum(['instrumental','choir']);
@@ -93,7 +94,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
   };
   const storageToFile=async(s:ObjectStore,key:string,path:string,max:number)=>s.getFile?s.getFile(key,path,max):s.get(key,max).then(data=>writeFile(path,data).then(()=>data.length));
   const fileToStorage=async(s:ObjectStore,key:string,path:string,type:string)=>s.putFile?s.putFile(key,path,type):(async()=>{const data=await readFile(path);await s.put(key,data,type);return data.length;})();
-  const needStorage=()=>{if(!storage)throw new FactoryError(503,'Підключи приватне сховище R2 в Render. Файли ще не завантажуються.');return storage;};
+  const needStorage=()=>{if(!storage)throw new FactoryError(503,`Підключи приватне сховище R2 у ${config.VEIL_LOCAL_MODE?'.env.local':'Render'}. Файли ще не завантажуються.`);return storage;};
   const reserveShortStory=async(db:PoolClient,current:Record<string,any>,regenerate=false)=>{
     const currentSceneCount=Array.isArray(current.short_plan?.scenes)?current.short_plan.scenes.length:0;
     if(current.short_plan&&!regenerate&&currentSceneCount===SHORTS_SCENE_COUNT)return current;
@@ -140,7 +141,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
         FROM factory_short_clips c JOIN factory_assets a ON a.id=c.asset_id ORDER BY c.release_id,c.position`)
     ]);
     const availableByChannel:Record<string,Record<string,number>>={};for(const r of counts.rows)(availableByChannel[r.channel_id]??={})[r.vocal]=Number(r.available);
-    return {configured:!!storage,aiConfigured:!!imageGenerator,imageAiProvider:configuredImageProvider,textAiConfigured:textGeneratorConfigured(),textAiProvider:textGeneratorProvider(),shortsLyricsConfigured:true,shortsClipMatchingConfigured:!!clipOrderer,localWorker:await getLocalWorkerSummary(),recipe:recipe.rows[0],effects:EFFECT_CATALOG,assets:assets.rows,releases:releases.rows,ideas:ideas.rows,notes:notes.rows,shortClips:shortClips.rows,channels:channels.rows,containers:containers.rows,channelContainers:channelContainers.rows,availableByChannel,availableByVocal:Object.fromEntries(counts.rows.filter(r=>r.channel_id==='veil-of-ages').map(r=>[r.vocal,Number(r.available)])),limit:STORAGE_LIMIT,inputLimit:INPUT_LIMIT};
+    return {configured:!!storage,localMode:config.VEIL_LOCAL_MODE,aiConfigured:!!imageGenerator,imageAiProvider:configuredImageProvider,textAiConfigured:textGeneratorConfigured(),textAiProvider:textGeneratorProvider(),shortsLyricsConfigured:true,shortsClipMatchingConfigured:!!clipOrderer,localWorker:await getLocalWorkerSummary(),recipe:recipe.rows[0],effects:EFFECT_CATALOG,assets:assets.rows,releases:releases.rows,ideas:ideas.rows,notes:notes.rows,shortClips:shortClips.rows,channels:channels.rows,containers:containers.rows,channelContainers:channelContainers.rows,availableByChannel,availableByVocal:Object.fromEntries(counts.rows.filter(r=>r.channel_id==='veil-of-ages').map(r=>[r.vocal,Number(r.available)])),limit:STORAGE_LIMIT,inputLimit:INPUT_LIMIT};
   });
   app.post('/api/factory/notes',async(req,reply)=>{
     const body=z.object({text:z.string().trim().min(1).max(1000)}).strict().parse(req.body);
@@ -382,10 +383,10 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
         return writes;
       };
       const failure=(error:unknown)=>{
-        if(stage==='waiting-memory')return 'Монтаж чекав на звільнення пам’яті Render і був перерваний. Матеріали збережено — можна повторити.';
+        if(stage==='waiting-memory')return 'Монтаж чекав на звільнення пам’яті й був перерваний. Матеріали збережено — можна повторити.';
         if(stage==='rendering'&&error instanceof MediaToolError&&error.reason==='stalled')return 'FFmpeg не передавав прогрес понад 5 хвилин, тому завислий монтаж зупинено. Матеріали збережено — можна повторити.';
         if(stage==='rendering'&&error instanceof MediaToolError&&error.reason==='timeout')return 'Монтаж Shorts не вклався у 90 хвилин. Матеріали збережено — можна повторити.';
-        if(stage==='rendering'&&error instanceof MediaToolError&&error.reason==='spawn')return 'FFmpeg не запустився. Перевір інструменти Render перед повтором.';
+        if(stage==='rendering'&&error instanceof MediaToolError&&error.reason==='spawn')return `FFmpeg не запустився. Перевір інструменти ${config.VEIL_LOCAL_MODE?'на цьому ПК':'Render'} перед повтором.`;
         const detail=error instanceof Error?error.message:'';
         return /слів|субтитр|синхрон|OpenAI/i.test(detail)?detail:'Не вдалося скласти Shorts. Матеріали збережено — можна повторити.';
       };
@@ -432,7 +433,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
         if(release.short_plan?.mode==='manual-video'&&manualClips.length>=SHORTS_SCENE_COUNT){
           const clipFiles:string[]=[];
           for(const [index,clip] of manualClips.entries()){await update('clips',23+index,`Отримуємо відеофрагмент ${index+1} із ${manualClips.length} з R2.`,true);const path=join(dir,`manual-${index}.mp4`);await storageToFile(s,clip.object_key,path,UPLOAD_MAX);clipFiles.push(path);}
-          await waitForMemory(controller.signal,budget=>{void update('waiting-memory',29,`Безпечна пауза перед FFmpeg: пам’ять Render зайнята на ${Math.round(budget.ratio*100)}%. Перевіряємо знову кожні кілька секунд.`,true);});
+          await waitForMemory(controller.signal,budget=>{void update('waiting-memory',29,`Безпечна пауза перед FFmpeg: пам’ять зайнята на ${Math.round(budget.ratio*100)}%. Перевіряємо знову кожні кілька секунд.`,true);});
           await requirePool().query("UPDATE factory_releases SET short_render_started_at=NOW(),short_processed_seconds=0,short_render_duration=$2,short_updated_at=NOW() WHERE id=$1 AND short_state='rendering'",[release.id,sourceClip.duration]);
           await update('rendering',30,'FFmpeg запущено. Збираємо шість сцен, музику й субтитри.',true);
           await (options.renderClips??renderVideoClips)(clipFiles,manualClips.map(clip=>Number(clip.duration)||1),audio,video,track.type==='audio/wav'?'wav':'mp3',controller.signal,p=>{const processed=Math.min(p.duration,p.seconds);void update('rendering',30+p.percent*.60,`FFmpeg змонтував ${processed.toFixed(1)} із ${p.duration.toFixed(1)} секунд.`,false,{seconds:processed,duration:p.duration});},[],sourceClip,lyricTrack);
@@ -446,7 +447,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
         await update('vertical-frame',23,'Отримуємо обкладинку й готуємо вертикальний кадр 9:16.',true);
         const image=join(dir,'shorts-cover.jpg'),artworkData=await s.get(cover.object_key,8*1024*1024);
         await writeFile(image,await buildShortsArtwork(artworkData,release.title));await update('vertical-frame',25,'Вертикальний кадр і субтитри готові.',true);
-        await waitForMemory(controller.signal,budget=>{void update('waiting-memory',29,`Безпечна пауза перед FFmpeg: пам’ять Render зайнята на ${Math.round(budget.ratio*100)}%. Перевіряємо знову кожні кілька секунд.`,true);});
+        await waitForMemory(controller.signal,budget=>{void update('waiting-memory',29,`Безпечна пауза перед FFmpeg: пам’ять зайнята на ${Math.round(budget.ratio*100)}%. Перевіряємо знову кожні кілька секунд.`,true);});
         const shortEffects=ACTIVE_EFFECT_IDS.filter(id=>id!=='story.three-scenes'&&id!=='transition.scene-crossfades');
         await requirePool().query("UPDATE factory_releases SET short_render_started_at=NOW(),short_processed_seconds=0,short_render_duration=$2,short_updated_at=NOW() WHERE id=$1 AND short_state='rendering'",[release.id,sourceClip.duration]);
         await update('rendering',30,'FFmpeg запущено. Поєднуємо вертикальний кадр, музику, рух та субтитри.',true);
@@ -593,7 +594,7 @@ export async function factoryRoutes(app: FastifyInstance, options: { storage?: O
       if(stage==='rendering'&&error instanceof MediaToolError&&error.reason==='timeout')return 'Монтаж не вклався у 90 хвилин. Трек і обкладинка збережені; повтор використає ті самі матеріали.';
       if(stage==='rendering'&&error instanceof MediaToolError&&error.reason==='stalled')return 'FFmpeg не передавав нового прогресу понад 5 хвилин, тому завислий монтаж безпечно зупинено. Повтор використає один образ і ті самі матеріали.';
         if(stage==='rendering'&&error instanceof MediaToolError&&error.reason==='aborted')return 'Монтаж перервано зупинкою або перезапуском сервера. Можна повторити з тими самими матеріалами.';
-        if(stage==='rendering'&&error instanceof MediaToolError&&error.reason==='spawn')return 'FFmpeg не запустився на сервері. Потрібно перевірити інструменти Render.';
+        if(stage==='rendering'&&error instanceof MediaToolError&&error.reason==='spawn')return `FFmpeg не запустився. Потрібно перевірити інструменти ${config.VEIL_LOCAL_MODE?'на цьому ПК':'Render'}.`;
         if(stage==='rendering')return 'FFmpeg зупинив монтаж. Трек і обкладинка збережені; повтор використає ті самі матеріали.';
         return 'Виробничу операцію не завершено. Матеріали збережені, тому безпечний повтор не створить нову концепцію.';
       };

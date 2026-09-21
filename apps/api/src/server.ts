@@ -21,6 +21,11 @@ import {
 
 // OAuth authorization codes must never appear in request logs.
 const app = Fastify({ logger: { serializers: { req: (req) => ({ method: req.method, url: req.url?.split('?')[0], hostname: req.hostname }) } } });
+if (config.VEIL_LOCAL_MODE) {
+  app.addHook('onRequest', async (request, reply) => {
+    if (!['localhost', '127.0.0.1', '[::1]'].includes(request.hostname)) return reply.code(421).send({ error: 'Локальний кабінет доступний лише з цього ПК.' });
+  });
+}
 await installOwnerAuth(app);
 await app.register(youtubeRoutes);
 await app.register(youtubeUploadRoutes);
@@ -88,8 +93,12 @@ app.post<{ Body: TelegramUpdate }>("/webhooks/telegram", async (request, reply) 
 
 async function start() {
   await migrate();
-  await app.listen({ port: config.PORT, host: "0.0.0.0" });
+  await app.listen({ port: config.PORT, host: config.VEIL_LOCAL_MODE ? "127.0.0.1" : "0.0.0.0" });
 
+  if (config.VEIL_LOCAL_MODE) {
+    app.log.info('Local studio is ready; Telegram webhook registration is intentionally skipped');
+    return;
+  }
   try {
     const registered = await registerTelegramWebhook();
     app.log.info(registered ? "Telegram webhook registered" : "Telegram webhook registration skipped");

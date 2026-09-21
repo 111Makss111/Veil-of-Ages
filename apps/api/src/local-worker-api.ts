@@ -6,6 +6,7 @@ import { createObjectStore } from './factory-storage.js';
 import type { ObjectStore } from './factory-storage.js';
 import { FactoryError, factoryLock } from './factory-store.js';
 import { MAX_OUTPUT_BYTES } from './media-render.js';
+import { config } from './config.js';
 
 const workerId=z.string().regex(/^[a-zA-Z0-9._-]{3,80}$/);
 const uuid=z.string().uuid();
@@ -19,7 +20,7 @@ const progressSchema=z.object({
 }).strict();
 
 const secret=()=>String(process.env.LOCAL_WORKER_SECRET||'');
-export const localWorkerConfigured=()=>secret().length>=32;
+export const localWorkerConfigured=()=>!config.VEIL_LOCAL_MODE&&secret().length>=32;
 const digest=(value:string)=>createHash('sha256').update(value).digest('hex');
 function sameSecret(value:string|undefined){
   const expected=secret();if(expected.length<32||!value)return false;

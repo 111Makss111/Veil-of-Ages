@@ -42,9 +42,9 @@ async function youtubeStatus(): Promise<Check> {
 export async function serviceStatus() {
   const env = process.env;
   return Promise.all([
-    check('render', true, async () => 'API відповідає'),
+    check(config.VEIL_LOCAL_MODE?'local':'render', true, async () => config.VEIL_LOCAL_MODE?'Кабінет і монтаж працюють на цьому ПК':'API відповідає'),
     check('neon', !!pool, async () => { await pool!.query('SELECT 1'); return 'Запит до бази успішний'; }),
-    check('telegram', !!(config.TELEGRAM_BOT_TOKEN && config.TELEGRAM_WEBHOOK_SECRET && config.TELEGRAM_BOT_USERNAME), async () => {
+    config.VEIL_LOCAL_MODE?Promise.resolve({id:'telegram',state:'not_configured' as const,detail:'Вхідний webhook не запускається локально; повернемося до Telegram після перенесення основного конвеєра',checkedAt:new Date().toISOString()}):check('telegram', !!(config.TELEGRAM_BOT_TOKEN && config.TELEGRAM_WEBHOOK_SECRET && config.TELEGRAM_BOT_USERNAME), async () => {
       const base = `https://api.telegram.org/bot${config.TELEGRAM_BOT_TOKEN}`;
       const [me, hook] = await Promise.all([json(`${base}/getMe`), json(`${base}/getWebhookInfo`)]);
       const origin = config.PUBLIC_API_URL ?? (config.RENDER_EXTERNAL_HOSTNAME ? `https://${config.RENDER_EXTERNAL_HOSTNAME}` : '');

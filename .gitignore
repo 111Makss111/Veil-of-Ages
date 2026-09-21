@@ -4,6 +4,10 @@ dist/
 .env
 .env.local
 .env.local-worker
+*.env
+Veil-of-Ages.env
+**/Veil-of-Ages.env
+**/*.env
 .npm-cache/
 *.log
 *.tsbuildinfo

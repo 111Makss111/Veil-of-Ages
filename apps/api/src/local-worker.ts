@@ -86,7 +86,7 @@ async function main(){
   process.env.FFMPEG_PATH=await locate('ffmpeg');process.env.FFPROBE_PATH=await locate('ffprobe');process.env.MEDIA_THREADS=process.env.MEDIA_THREADS||String(Math.min(8,Math.max(2,cpus().length-2)));
   await checkMediaTools();
   if((process.env.LOCAL_VIDEO_ENCODER||'auto')==='auto'){
-    try{await runMediaTool(process.env.FFMPEG_PATH,['-hide_banner','-loglevel','error','-f','lavfi','-i','color=c=black:s=64x64:d=.1','-c:v','h264_nvenc','-f','null',process.platform==='win32'?'NUL':'/dev/null'],15000);process.env.LOCAL_VIDEO_ENCODER='h264_nvenc';}
+    try{await runMediaTool(process.env.FFMPEG_PATH,['-hide_banner','-loglevel','error','-f','lavfi','-i','color=c=black:s=64x64:d=0.1','-c:v','h264_nvenc','-f','null',process.platform==='win32'?'NUL':'/dev/null'],15000);process.env.LOCAL_VIDEO_ENCODER='h264_nvenc';}
     catch{process.env.LOCAL_VIDEO_ENCODER='libx264';}
   }
   await mkdir(resolve(process.cwd(),'exports'),{recursive:true});
